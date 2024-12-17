@@ -1,0 +1,41 @@
+# Logs
+logs/
+*.log
+
+# Data files
+*.csv
+*.json
+*.pt
+*.pkl
+*.npy
+*.npz
+*.parquet
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# dotenv
+.env
+.env.*
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+env.bak/
+venv.bak/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE specific
+.vscode/
+.idea/

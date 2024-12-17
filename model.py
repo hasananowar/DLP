@@ -328,6 +328,147 @@ class Patch_Encoding(nn.Module):
         x = self.mlp_head(x)
         return x
     
+
+
+
+# class EdgePredictor_dual(nn.Module):
+#     """
+#     Predicts two edges per src node: dst1 and dst2.
+#     """
+#     def __init__(self, dim_in_time, dim_in_node, predict_class):
+#         super(EdgePredictor_dual, self).__init__()
+        
+#         # Shared linear layer for src nodes
+#         self.src_fc = nn.Linear(dim_in_time + dim_in_node, 100)
+        
+#         # Separate linear layers for dst1 and dst2
+#         self.dst1_fc = nn.Linear(dim_in_time + dim_in_node, 100)
+#         self.dst2_fc = nn.Linear(dim_in_time + dim_in_node, 100)
+        
+#         # Output layers for dst1 and dst2
+#         self.out_fc1 = nn.Linear(100, predict_class)
+#         self.out_fc2 = nn.Linear(100, predict_class)
+        
+#         self.reset_parameters()
+        
+#     def reset_parameters(self):
+#         nn.init.xavier_uniform_(self.src_fc.weight)
+#         nn.init.zeros_(self.src_fc.bias)
+        
+#         nn.init.xavier_uniform_(self.dst1_fc.weight)
+#         nn.init.zeros_(self.dst1_fc.bias)
+        
+#         nn.init.xavier_uniform_(self.dst2_fc.weight)
+#         nn.init.zeros_(self.dst2_fc.bias)
+        
+#         nn.init.xavier_uniform_(self.out_fc1.weight)
+#         nn.init.zeros_(self.out_fc1.bias)
+        
+#         nn.init.xavier_uniform_(self.out_fc2.weight)
+#         nn.init.zeros_(self.out_fc2.bias)
+        
+#     def forward(self, h, neg_samples=1):
+#         """
+#         Forward pass for dual predictions.
+        
+#         Args:
+#             h (Tensor): Input features [batch_size*3 + neg_samples*batch_size*2, dim]
+#                 - First batch_size: src nodes
+#                 - Next batch_size: dst1 nodes
+#                 - Next batch_size: dst2 nodes
+#                 - Remaining: negative samples for dst1 and dst2
+#             neg_samples (int): Number of negative samples per positive sample
+        
+#         Returns:
+#             pred_pos1, pred_neg1, pred_pos2, pred_neg2
+#         """
+#         num_total = h.shape[0]
+#         batch_size = num_total // (3 + neg_samples * 2)
+        
+#         # Extract src, dst1, dst2
+#         h_src = self.src_fc(h[:batch_size])  # [batch_size, 100]
+#         h_dst1 = self.dst1_fc(h[batch_size:2*batch_size])  # [batch_size, 100]
+#         h_dst2 = self.dst2_fc(h[2*batch_size:3*batch_size])  # [batch_size, 100]
+        
+#         # Negative samples for dst1
+#         h_neg1 = self.dst1_fc(h[3*batch_size:3*batch_size + batch_size * neg_samples])  # [batch_size * neg_samples, 100]
+        
+#         # Negative samples for dst2
+#         h_neg2 = self.dst2_fc(h[3*batch_size + batch_size * neg_samples:])  # [batch_size * neg_samples, 100]
+        
+#         # Positive edge predictions
+#         h_pos_edge1 = F.relu(h_src + h_dst1)  # [batch_size, 100]
+#         h_pos_edge2 = F.relu(h_src + h_dst2)  # [batch_size, 100]
+        
+#         # Negative edge predictions
+#         h_neg_edge1 = F.relu(h_src.unsqueeze(1).repeat(1, neg_samples, 1).view(-1, 100) + h_neg1)  # [batch_size * neg_samples, 100]
+#         h_neg_edge2 = F.relu(h_src.unsqueeze(1).repeat(1, neg_samples, 1).view(-1, 100) + h_neg2)  # [batch_size * neg_samples, 100]
+        
+#         # Output layers
+#         pred_pos1 = self.out_fc1(h_pos_edge1)  # [batch_size, predict_class]
+#         pred_neg1 = self.out_fc1(h_neg_edge1)  # [batch_size * neg_samples, predict_class]
+        
+#         pred_pos2 = self.out_fc2(h_pos_edge2)  # [batch_size, predict_class]
+#         pred_neg2 = self.out_fc2(h_neg_edge2)  # [batch_size * neg_samples, predict_class]
+        
+#         return pred_pos1, pred_neg1, pred_pos2, pred_neg2
+
+class STHN_Dual_Interface(nn.Module):
+    def __init__(self, mlp_mixer_configs, edge_predictor_configs):
+        super(STHN_Dual_Interface, self).__init__()
+
+        self.time_feats_dim = edge_predictor_configs['dim_in_time']
+        self.node_feats_dim = edge_predictor_configs['dim_in_node']
+
+        if self.time_feats_dim > 0:
+            self.base_model = Patch_Encoding(**mlp_mixer_configs)
+
+        self.edge_predictor1 = EdgePredictor_per_node(**edge_predictor_configs)        
+        self.edge_predictor2 = EdgePredictor_per_node(**edge_predictor_configs)        
+        self.criterion = nn.BCEWithLogitsLoss(reduction='none') 
+        self.reset_parameters()            
+
+    def reset_parameters(self):
+        if self.time_feats_dim > 0:
+            self.base_model.reset_parameters()
+        self.edge_predictor1.reset_parameters()
+        self.edge_predictor2.reset_parameters()
+
+    def forward(self, model_inputs1, model_inputs2, neg_samples, node_feats):        
+        # Predict for dst1
+        pred_pos1, pred_neg1 = self.predict(model_inputs1, neg_samples, node_feats)
+        all_pred1 = torch.cat((pred_pos1, pred_neg1), dim=0)
+        all_edge_label1 = torch.cat((torch.ones_like(pred_pos1), 
+                                     torch.zeros_like(pred_neg1)), dim=0)
+        loss1 = self.criterion(all_pred1, all_edge_label1).mean()
+
+        # Predict for dst2
+        pred_pos2, pred_neg2 = self.predict(model_inputs2, neg_samples, node_feats)
+        all_pred2 = torch.cat((pred_pos2, pred_neg2), dim=0)
+        all_edge_label2 = torch.cat((torch.ones_like(pred_pos2), 
+                                     torch.zeros_like(pred_neg2)), dim=0)
+        loss2 = self.criterion(all_pred2, all_edge_label2).mean()
+
+        # Total loss
+        total_loss = loss1 + loss2
+
+        return total_loss, all_pred1, all_edge_label1, all_pred2, all_edge_label2
+
+    def predict(self, model_inputs, neg_samples, node_feats):
+        if self.time_feats_dim > 0 and self.node_feats_dim == 0:
+            x = self.base_model(*model_inputs)
+        elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
+            x = self.base_model(*model_inputs)
+            x = torch.cat([x, node_feats], dim=1)
+        elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
+            x = node_feats
+        else:
+            raise ValueError('Either time_feats_dim or node_feats_dim must be larger than 0!')
+
+        # Predict for dst1 and dst2
+        pred_pos1, pred_neg1 = self.edge_predictor1(x, neg_samples=neg_samples)
+        pred_pos2, pred_neg2 = self.edge_predictor2(x, neg_samples=neg_samples)
+        return pred_pos1, pred_neg1, pred_pos2, pred_neg2
 ################################################################################################
 ################################################################################################
 ################################################################################################
@@ -370,7 +511,8 @@ class EdgePredictor_per_node(torch.nn.Module):
         
         return self.out_fc(h_pos_edge), self.out_fc(h_neg_edge)
     
-    
+
+
 class STHN_Interface(nn.Module):
     def __init__(self, mlp_mixer_configs, edge_predictor_configs):
         super(STHN_Interface, self).__init__()
@@ -455,5 +597,5 @@ class Multiclass_Interface(nn.Module):
         
         pred_pos, pred_neg = self.edge_predictor(x, neg_samples=neg_samples)
         return pred_pos, pred_neg
-
     
+

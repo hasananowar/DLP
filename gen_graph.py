@@ -4,15 +4,26 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
+import os
+
 parser = argparse.ArgumentParser()
-parser.add_argument('--data', default='movie', type=str, help='dataset name')
+parser.add_argument('--data', default='HB/edges1.csv', type=str, help='dataset name')
 parser.add_argument('--add_reverse', default=True, action='store_true')
 
 args = parser.parse_args()
 print(args)
 
 
-df = pd.read_csv('DATA/{}/edges.csv'.format(args.data))
+# df = pd.read_csv('DATA/{}/edges.csv'.format(args.data))
+
+# Extract the base name of the input CSV file (e.g., edges1 from HB/edges1.csv)
+npz_filename = os.path.splitext(os.path.basename(args.data))[0] + '.npz'
+npz_output_path = os.path.join('DATA', os.path.dirname(args.data), npz_filename)
+
+# Load CSV Data
+csv_path = os.path.join('DATA', args.data)
+df = pd.read_csv(csv_path)
+
 num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1 
 print('num_nodes: ', num_nodes)
 
@@ -56,7 +67,10 @@ for i in tqdm(range(ext_full_indptr.shape[0] - 1)):
 
 print('saving...')
 
-np.savez('DATA/{}/ext_full.npz'.format(args.data), indptr=ext_full_indptr,
-        indices=ext_full_indices, ts=ext_full_ts, eid=ext_full_eid)
+# np.savez('DATA/{}/ext_full.npz'.format(args.data), indptr=ext_full_indptr,
+#         indices=ext_full_indices, ts=ext_full_ts, eid=ext_full_eid)
+
+np.savez(npz_output_path, indptr=ext_full_indptr,
+         indices=ext_full_indices, ts=ext_full_ts, eid=ext_full_eid)
 
 

@@ -1,9 +1,13 @@
 import torch
 import numpy as np
 import argparse
-from utils import set_seed, load_feat, load_graph
+# from utils import set_seed, load_feat, load_graph
 from data_process_utils import check_data_leakage
 
+
+import os
+import pandas as pd
+import random
 
 ####################################################################
 ####################################################################
@@ -18,7 +22,7 @@ def print_model_info(model):
 
 def get_args():
     parser=argparse.ArgumentParser()
-    parser.add_argument('--data', type=str, default='movie')
+    parser.add_argument('--data', type=str, default='HB', help="Base directory for the data files")
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=600)
     parser.add_argument('--epochs', type=int, default=300)
@@ -56,74 +60,128 @@ def get_args():
     parser.add_argument('--use_cached_subgraph', action='store_true')
     return parser.parse_args()
 
+# utility function
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+def load_feat(d):
+    node_feats = None
+    if os.path.exists('DATA/{}/node_features.pt'.format(d)):
+        node_feats = torch.load('DATA/{}/node_features.pt'.format(d))
+        if node_feats.dtype == torch.bool:
+            node_feats = node_feats.type(torch.float32)
+        
+
+    edge_feats = None
+    if os.path.exists('DATA/{}/edge_features.pt'.format(d)):
+        edge_feats = torch.load('DATA/{}/edge_features.pt'.format(d))
+        if edge_feats.dtype == torch.bool:
+            edge_feats = edge_feats.type(torch.float32)
+    return node_feats, edge_feats    
+
+def load_graph(d):
+    """
+    Load graph and edge list data from the specified directory.
+
+    Parameters:
+    - d (str): Base directory name containing graph and edge files.
+
+    Returns:
+    - g1, df1: First graph and its edge list data.
+    - g2, df2: Second graph and its edge list data.
+    """
+    df1 = pd.read_csv(f'DATA/{d}/edges1.csv')
+    g1 = np.load(f'DATA/{d}/edges1.npz')
+    df2 = pd.read_csv(f'DATA/{d}/edges2.csv')
+    g2 = np.load(f'DATA/{d}/edges2.npz')
+    return g1, df1, g2, df2
 
 def load_all_data(args):
 
     # load graph
-    g, df = load_graph(args.data)
+    # g, df = load_graph(args.data)
+    g1, df1, g2, df2 = load_graph(args.data)
+    print(f"Loaded graphs and data from DATA/{args.data}")
+
+    # Determine split indices based on one of the datasets (assuming they are aligned)
+    args.train_edge_end = df1[df1['ext_roll'].gt(0)].index[0]
+    args.val_edge_end   = df1[df1['ext_roll'].gt(1)].index[0]
+    args.num_nodes = max(int(df1['src'].max()), int(df1['dst1'].max()), int(df2['dst2'].max())) + 1
+    args.num_edges = len(df1) * 2 + len(df2) * 2  # Each dataset may have reversed edges
     
-    args.train_edge_end = df[df['ext_roll'].gt(0)].index[0]
-    args.val_edge_end   = df[df['ext_roll'].gt(1)].index[0]
-    args.num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1
-    args.num_edges = len(df)
-    print('Train %d, Valid %d, Test %d'%(args.train_edge_end, 
-                                         args.val_edge_end-args.train_edge_end,
-                                         len(df)-args.val_edge_end))
-    print('Num nodes %d, num edges %d'%(args.num_nodes, args.num_edges))
-
-    # load feats 
-    node_feats, edge_feats = load_feat(args.data)
+    print('Train %d, Valid %d, Test %d' % (
+        args.train_edge_end * 2, 
+        (args.val_edge_end - args.train_edge_end) * 2,
+        (len(df1) - args.val_edge_end) * 2
+    ))
+    print('Num nodes %d, num edges %d' % (args.num_nodes, args.num_edges))
+    
+    # Load features (assuming node features are same for both datasets)
+    node_feats, edge_feats1 = load_feat(args.data1)  # Modify as needed
+    _, edge_feats2 = load_feat(args.data2)
+    
+    # Feature pre-processing
     node_feat_dims = 0 if node_feats is None else node_feats.shape[1]
-    edge_feat_dims = 0 if edge_feats is None else edge_feats.shape[1]
-
-    # feature pre-processing
+    edge_feat_dims1 = 0 if edge_feats1 is None else edge_feats1.shape[1]
+    edge_feat_dims2 = 0 if edge_feats2 is None else edge_feats2.shape[1]
+    
     if args.use_onehot_node_feats:
         print('>>> Use one-hot node features')
         node_feats = torch.eye(args.num_nodes)
         node_feat_dims = node_feats.size(1)
-
+    
     if args.ignore_node_feats:
         print('>>> Ignore node features')
         node_feats = None
         node_feat_dims = 0
-
-    if args.use_type_feats:
-        edge_type = df.label.values
-        args.num_edgeType = len(set(edge_type.tolist()))
-        edge_feats = torch.nn.functional.one_hot(torch.from_numpy(edge_type-1), 
-                                                 num_classes=args.num_edgeType)
-        edge_feat_dims = edge_feats.size(1)
-        
-    print('Node feature dim %d, edge feature dim %d'%(node_feat_dims, edge_feat_dims))
     
-    # double check (if data leakage then cannot continue the code)
+    if args.use_type_feats:
+        edge_type1 = df1['label'].values
+        edge_type2 = df2['label'].values
+        args.num_edgeType = len(set(np.concatenate([edge_type1, edge_type2]).tolist()))
+        edge_feats1 = torch.nn.functional.one_hot(torch.from_numpy(edge_type1 - 1), num_classes=args.num_edgeType)
+        edge_feats2 = torch.nn.functional.one_hot(torch.from_numpy(edge_type2 - 1), num_classes=args.num_edgeType)
+        edge_feats = torch.cat([edge_feats1, edge_feats2], dim=0)
+        edge_feat_dims = edge_feats.size(1)
+    else:
+        edge_feats = torch.cat([edge_feats1, edge_feats2], dim=0)
+        edge_feat_dims = edge_feat_dims1 + edge_feat_dims2
+    
+    print('Node feature dim %d, Edge feature dim %d' % (node_feat_dims, edge_feat_dims))
+    
+    # Data leakage check (assuming it should be applied to both datasets)
     if args.check_data_leakage:
-        check_data_leakage(args, g, df)
-
+        check_data_leakage(args, g1, df1, g2, df2)
+    
     args.node_feat_dims = node_feat_dims
     args.edge_feat_dims = edge_feat_dims
     
-    if node_feats != None:
+    # Move features to device
+    if node_feats is not None:
         node_feats = node_feats.to(args.device)
-    if edge_feats != None:
+    if edge_feats is not None:
         edge_feats = edge_feats.to(args.device)
     
-    return node_feats, edge_feats, g, df, args
+    return node_feats, edge_feats, (g1, g2), (df1, df2), args
 
 
-def load_model(args):
-    # get model
+def load_model_dual(args):
+    # Define edge predictor configurations
     edge_predictor_configs = {
         'dim_in_time': args.time_dims,
         'dim_in_node': args.node_feat_dims,
-        'predict_class': 1 if not args.predict_class else args.num_edgeType+1,
+        'predict_class': 1 if not args.predict_class else args.num_edgeType + 1,
     }
+
     if args.model == 'sthn':
         if args.predict_class:
-            from model import Multiclass_Interface as STHN_Interface
+            from model import Multiclass_Dual_Interface as STHN_Interface
         else:
-            from model import STHN_Interface
-        from link_pred_train_utils import link_pred_train
+            from model import STHN_Dual_Interface as STHN_Interface
+        from link_pred_train_utils import link_pred_train_dual
 
         mixer_configs = {
             'per_graph_size'  : args.max_edges,
@@ -137,45 +195,47 @@ def load_model(args):
             'window_size'     : args.window_size,
             'use_single_layer' : False
         }  
-        
     else:
-        NotImplementedError()
-
+        raise NotImplementedError("Only 'sthn' model is implemented.")
+    
     model = STHN_Interface(mixer_configs, edge_predictor_configs)
     for k, v in model.named_parameters():
         print(k, v.requires_grad)
 
     print_model_info(model)
 
-    return model, args, link_pred_train
+    return model, args, link_pred_train_dual
         
-####################################################################
 ####################################################################
 ####################################################################
 
 if __name__ == "__main__":
     args = get_args()
 
+    # Set specific arguments related to graph structure and feature usage
     args.use_graph_structure = True
-    args.ignore_node_feats = True # we only use graph structure
-    args.use_type_feats = True # type encoding
+    args.ignore_node_feats = True  # We only use graph structure
+    args.use_type_feats = True     # Type encoding
     args.use_cached_subgraph = True
-    
+
     print(args)
-    
+
+    # Determine device
     args.device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"
     args.device = torch.device(args.device)
-    set_seed(0)
     
-    ###################################################
-    # load feats + graph
-    node_feats, edge_feats, g, df, args = load_all_data(args)
-        
-    ###################################################
-    # get model 
-    model, args, link_pred_train = load_model(args)
+    # Set random seed for reproducibility
+    set_seed(0)
 
     ###################################################
-    # Link prediction
-    print('Train link prediction task from scratch ...')
-    model = link_pred_train(model.to(args.device), args, g, df, node_feats, edge_feats)
+    # Load features and graphs
+    node_feats, edge_feats, (g1, g2), (df1, df2), args = load_all_data(args)
+        
+    ###################################################
+    # Load model
+    model, args, link_pred_train_dual = load_model_dual(args)
+
+    ###################################################
+    # Link prediction training
+    print('Train dual link prediction task from scratch ...')
+    best_model = link_pred_train_dual(model.to(args.device), args, (g1, g2), (df1, df2), node_feats, edge_feats)

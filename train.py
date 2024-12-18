@@ -24,8 +24,8 @@ def get_args():
     parser=argparse.ArgumentParser()
     parser.add_argument('--data', type=str, default='HB', help="Base directory for the data files")
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--batch_size', type=int, default=600)
-    parser.add_argument('--epochs', type=int, default=300)
+    parser.add_argument('--batch_size', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--max_edges', type=int, default=50)
     parser.add_argument('--num_edgeType', type=int, default=0, help='num of edgeType')
     parser.add_argument('--lr', type=float, default=0.0005)
@@ -109,7 +109,7 @@ def load_all_data(args):
     # Determine split indices based on one of the datasets (assuming they are aligned)
     args.train_edge_end = df1[df1['ext_roll'].gt(0)].index[0]
     args.val_edge_end   = df1[df1['ext_roll'].gt(1)].index[0]
-    args.num_nodes = max(int(df1['src'].max()), int(df1['dst1'].max()), int(df2['dst2'].max())) + 1
+    args.num_nodes = max(int(df1['src'].max()), int(df1['dst'].max()), int(df2['dst'].max())) + 1
     args.num_edges = len(df1) * 2 + len(df2) * 2  # Each dataset may have reversed edges
     
     print('Train %d, Valid %d, Test %d' % (
@@ -120,8 +120,8 @@ def load_all_data(args):
     print('Num nodes %d, num edges %d' % (args.num_nodes, args.num_edges))
     
     # Load features (assuming node features are same for both datasets)
-    node_feats, edge_feats1 = load_feat(args.data1)  # Modify as needed
-    _, edge_feats2 = load_feat(args.data2)
+    node_feats, edge_feats1 = load_feat(args.data)  # Modify as needed
+    _, edge_feats2 = load_feat(args.data)
     
     # Feature pre-processing
     node_feat_dims = 0 if node_feats is None else node_feats.shape[1]

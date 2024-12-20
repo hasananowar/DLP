@@ -4,7 +4,6 @@ import argparse
 # from utils import set_seed, load_feat, load_graph
 from data_process_utils import check_data_leakage
 
-
 import os
 import pandas as pd
 import random
@@ -15,7 +14,7 @@ import random
 
 
 def print_model_info(model):
-    print(model)
+    # print(model)
     parameters = filter(lambda p: p.requires_grad, model.parameters())
     parameters = sum([np.prod(p.size()) for p in parameters])
     print('Trainable Parameters: %d' % parameters)
@@ -75,12 +74,13 @@ def load_feat(d):
             node_feats = node_feats.type(torch.float32)
         
 
-    edge_feats = None
+    edge_feats1 = None
+    edge_feats2 = None
     if os.path.exists('DATA/{}/edge_features.pt'.format(d)):
         edge_feats = torch.load('DATA/{}/edge_features.pt'.format(d))
         if edge_feats.dtype == torch.bool:
             edge_feats = edge_feats.type(torch.float32)
-    return node_feats, edge_feats    
+    return node_feats, edge_feats1, edge_feats2   
 
 def load_graph(d):
     """
@@ -109,29 +109,29 @@ def load_all_data(args):
     # Determine split indices based on one of the datasets (assuming they are aligned)
     args.train_edge_end = df1[df1['ext_roll'].gt(0)].index[0]
     args.val_edge_end   = df1[df1['ext_roll'].gt(1)].index[0]
-    args.num_nodes = max(int(df1['src'].max()), int(df1['dst'].max()), int(df2['dst'].max())) + 1
-    args.num_edges = len(df1) * 2 + len(df2) * 2  # Each dataset may have reversed edges
-    
-    print('Train %d, Valid %d, Test %d' % (
-        args.train_edge_end * 2, 
-        (args.val_edge_end - args.train_edge_end) * 2,
-        (len(df1) - args.val_edge_end) * 2
-    ))
-    print('Num nodes %d, num edges %d' % (args.num_nodes, args.num_edges))
+    args.num_nodes1 = max(int(df1['src'].max()), int(df1['dst'].max())) + 1
+    args.num_nodes2 = max(int(df2['src'].max()), int(df2['dst'].max())) + 1
+    args.num_edges = len(df1) # the number of edges are same for both datasets
+
+    print('Train %d, Valid %d, Test %d'%(args.train_edge_end, 
+                                         args.val_edge_end-args.train_edge_end,
+                                         len(df1)-args.val_edge_end))
+    print('Num nodes for data1 %d, Num nodes for data2 %d, num edges %d' % (args.num_nodes1, args.num_nodes2, args.num_edges))
     
     # Load features (assuming node features are same for both datasets)
-    node_feats, edge_feats1 = load_feat(args.data)  # Modify as needed
-    _, edge_feats2 = load_feat(args.data)
+    node_feats, edge_feats1, edge_feats2  = load_feat(args.data)  # Modify as needed
     
     # Feature pre-processing
     node_feat_dims = 0 if node_feats is None else node_feats.shape[1]
-    edge_feat_dims1 = 0 if edge_feats1 is None else edge_feats1.shape[1]
-    edge_feat_dims2 = 0 if edge_feats2 is None else edge_feats2.shape[1]
+    edge_feat1_dims = 0 if edge_feats1 is None else edge_feats1.shape[1]
+    edge_feat2_dims = 0 if edge_feats2 is None else edge_feats2.shape[1]
     
     if args.use_onehot_node_feats:
         print('>>> Use one-hot node features')
-        node_feats = torch.eye(args.num_nodes)
-        node_feat_dims = node_feats.size(1)
+        node_feats1 = torch.eye(args.num_nodes1)
+        node_feat1_dims = node_feats1.size(1)
+        node_feats2 = torch.eye(args.num_nodes2)
+        node_feat2_dims = node_feats2.size(1)
     
     if args.ignore_node_feats:
         print('>>> Ignore node features')
@@ -139,33 +139,38 @@ def load_all_data(args):
         node_feat_dims = 0
     
     if args.use_type_feats:
-        edge_type1 = df1['label'].values
-        edge_type2 = df2['label'].values
-        args.num_edgeType = len(set(np.concatenate([edge_type1, edge_type2]).tolist()))
-        edge_feats1 = torch.nn.functional.one_hot(torch.from_numpy(edge_type1 - 1), num_classes=args.num_edgeType)
-        edge_feats2 = torch.nn.functional.one_hot(torch.from_numpy(edge_type2 - 1), num_classes=args.num_edgeType)
-        edge_feats = torch.cat([edge_feats1, edge_feats2], dim=0)
-        edge_feat_dims = edge_feats.size(1)
-    else:
-        edge_feats = torch.cat([edge_feats1, edge_feats2], dim=0)
-        edge_feat_dims = edge_feat_dims1 + edge_feat_dims2
+
+
+        edge_type1 = df1.label.values
+        args.num_edgeType1 = len(set(edge_type1.tolist()))
+        edge_feats1 = torch.nn.functional.one_hot(torch.from_numpy(edge_type1-1), 
+                                                 num_classes=args.num_edgeType1)
+        edge_feat1_dims = edge_feats1.size(1)
+
+        edge_type2 = df2.label.values
+        args.num_edgeType2 = len(set(edge_type2.tolist()))
+        edge_feats2 = torch.nn.functional.one_hot(torch.from_numpy(edge_type2-1), 
+                                                 num_classes=args.num_edgeType2)
+        edge_feat2_dims = edge_feats2.size(1)
     
-    print('Node feature dim %d, Edge feature dim %d' % (node_feat_dims, edge_feat_dims))
+    print('Node feature dim %d, Edges1 feature dim %d, Edges2 feature dim %d' % (node_feat_dims, edge_feat1_dims, edge_feat2_dims))
     
     # Data leakage check (assuming it should be applied to both datasets)
     if args.check_data_leakage:
-        check_data_leakage(args, g1, df1, g2, df2)
+        check_data_leakage(args, g1, df1)
     
     args.node_feat_dims = node_feat_dims
-    args.edge_feat_dims = edge_feat_dims
+    args.edge_feat_dims = edge_feat1_dims
     
     # Move features to device
     if node_feats is not None:
         node_feats = node_feats.to(args.device)
-    if edge_feats is not None:
-        edge_feats = edge_feats.to(args.device)
+    if edge_feats1 is not None:
+        edge_feats1 = edge_feats1.to(args.device)
+    if edge_feats2 is not None:
+        edge_feats2 = edge_feats2.to(args.device)
     
-    return node_feats, edge_feats, (g1, g2), (df1, df2), args
+    return node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args
 
 
 def load_model_dual(args):
@@ -196,13 +201,13 @@ def load_model_dual(args):
             'use_single_layer' : False
         }  
     else:
-        raise NotImplementedError("Only 'sthn' model is implemented.")
+        NotImplementedError
     
     model = STHN_Interface(mixer_configs, edge_predictor_configs)
     for k, v in model.named_parameters():
         print(k, v.requires_grad)
 
-    print_model_info(model)
+    # print_model_info(model)
 
     return model, args, link_pred_train_dual
         
@@ -229,7 +234,7 @@ if __name__ == "__main__":
 
     ###################################################
     # Load features and graphs
-    node_feats, edge_feats, (g1, g2), (df1, df2), args = load_all_data(args)
+    node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
         
     ###################################################
     # Load model
@@ -238,4 +243,4 @@ if __name__ == "__main__":
     ###################################################
     # Link prediction training
     print('Train dual link prediction task from scratch ...')
-    best_model = link_pred_train_dual(model.to(args.device), args, (g1, g2), (df1, df2), node_feats, edge_feats)
+    model = link_pred_train_dual(model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2)

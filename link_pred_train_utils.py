@@ -5,14 +5,14 @@ import copy
 import numpy as np
 from torch_sparse import SparseTensor
 from data_process_utils import pre_compute_subgraphs, get_random_inds, get_subgraph_sampler
-from construct_subgraph import construct_mini_batch_giant_graph
+from construct_subgraph import construct_mini_batch_giant_graph, print_subgraph_data
 from utils import row_norm
 from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision
 from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
 from sklearn.preprocessing import MinMaxScaler
 
 
-def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats, edge_feats, 
+def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
              MLAUROC1, MLAUPRC1, MLAUROC2, MLAUPRC2, mode):
     """
     Executes a training or evaluation epoch for dual link prediction tasks.
@@ -61,31 +61,36 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     assert len(train_loader1) == len(train_loader2), "Mismatch in number of batches between subgraphs1 and subgraphs2"
     
     pbar = tqdm(total=len(train_loader1))
-    pbar.set_description('%s mode with negative samples1 %d and negative samples2 %d ...'%(mode, neg_samples1, neg_samples2))
+    pbar.set_description('%s mode with negative samples1 %d ...'%(mode, neg_samples1))
         
     ###################################################
     # Initialize variables for loss and metrics
+    subgraphs1, elabel1 = subgraphs1
+    subgraphs2, elabel2 = subgraphs2
     loss_lst = []
     MLAUROC1.reset()
     MLAUPRC1.reset()
     MLAUROC2.reset()
     MLAUPRC2.reset()
-    scaler = MinMaxScaler()
+    scaler1 = MinMaxScaler()
+    scaler2= MinMaxScaler()
     
-    for (ind1, rows1), (ind2, rows2) in zip(train_loader1, train_loader2):
+    for ind in range(len(train_loader1)):
         ###################################################
         if args.use_cached_subgraph == False and mode == 'train':
-            subgraph_data_list1 = subgraphs1.all_root_nodes[ind1]
-            subgraph_data_list2 = subgraphs2.all_root_nodes[ind2]
+            subgraph_data_list1 = subgraphs1.all_root_nodes[ind]
+            subgraph_data_list2 = subgraphs2.all_root_nodes[ind]
             
             mini_batch_inds1 = get_random_inds(len(subgraph_data_list1), cached_neg_samples1, neg_samples1)
             mini_batch_inds2 = get_random_inds(len(subgraph_data_list2), cached_neg_samples2, neg_samples2)
             
-            subgraph_data1 = subgraphs1.mini_batch(ind1, mini_batch_inds1)
-            subgraph_data2 = subgraphs2.mini_batch(ind2, mini_batch_inds2)
+            subgraph_data1 = subgraphs1.mini_batch(ind, mini_batch_inds1)
+            subgraph_data2 = subgraphs2.mini_batch(ind, mini_batch_inds2)
+            
         else: # valid + test
-            subgraph_data_list1 = subgraphs1[ind1]
-            subgraph_data_list2 = subgraphs2[ind2]
+            print('using cached subgraph')
+            subgraph_data_list1 = subgraphs1[ind]
+            subgraph_data_list2 = subgraphs2[ind]
             
             mini_batch_inds1 = get_random_inds(len(subgraph_data_list1), cached_neg_samples1, neg_samples1)
             mini_batch_inds2 = get_random_inds(len(subgraph_data_list2), cached_neg_samples2, neg_samples2)
@@ -96,38 +101,21 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         # Construct mini-batch giant graphs for both subgraphs
         subgraph_data1 = construct_mini_batch_giant_graph(subgraph_data1, args.max_edges)
         subgraph_data2 = construct_mini_batch_giant_graph(subgraph_data2, args.max_edges)
-
-        ###################################################
-        # Compute inds1 and inds2 based on all_edge_indptr
-        all_inds1 = []
-        has_temporal_neighbors1 = []
-        all_edge_indptr1 = subgraph_data1['all_edge_indptr']
-        for i in range(len(all_edge_indptr1) -1):
-            num_edges = all_edge_indptr1[i+1] - all_edge_indptr1[i]
-            all_inds1.extend([args.max_edges * i + j for j in range(num_edges)])
-            has_temporal_neighbors1.append(num_edges > 0)
-        inds1 = torch.tensor(all_inds1, dtype=torch.long).to(args.device)
-
-        all_inds2 = []
-        has_temporal_neighbors2 = []
-        all_edge_indptr2 = subgraph_data2['all_edge_indptr']
-        for i in range(len(all_edge_indptr2) -1):
-            num_edges = all_edge_indptr2[i+1] - all_edge_indptr2[i]
-            all_inds2.extend([args.max_edges * i + j for j in range(num_edges)])
-            has_temporal_neighbors2.append(num_edges > 0)
-        inds2 = torch.tensor(all_inds2, dtype=torch.long).to(args.device)
+        print_subgraph_data(subgraph_data1)
+        
         
         ###################################################
         # Raw edge feats 
-        subgraph_edge_feats1 = edge_feats[subgraph_data1['eid']].to(args.device)
-        subgraph_edts1 = torch.from_numpy(subgraph_data1['edts']).float().to(args.device)
+        subgraph_edge_feats1 = edge_feats1[subgraph_data1['eid']]
+        subgraph_edts1 = torch.from_numpy(subgraph_data1['edts']).float()
+
         
-        subgraph_edge_feats2 = edge_feats[subgraph_data2['eid']].to(args.device)
-        subgraph_edts2 = torch.from_numpy(subgraph_data2['edts']).float().to(args.device)
+        subgraph_edge_feats2 = edge_feats2[subgraph_data2['eid']]
+        subgraph_edts2 = torch.from_numpy(subgraph_data2['edts']).float()
         
         ###################################################
         # Handle node features if required
-        if args.use_graph_structure and node_feats is not None:
+        if args.use_graph_structure and node_feats:
             num_of_df_links1 = len(subgraph_data_list1) //  (cached_neg_samples1 + 2)   
             subgraph_node_feats1 = compute_sign_feats(node_feats, df1, cur_inds1, num_of_df_links1, subgraph_data1['root_nodes'], args)
             cur_inds1 += num_of_df_links1
@@ -141,28 +129,72 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         
         ###################################################
         # Scale edge timestamps
-        scaler.fit(subgraph_edts1.reshape(-1,1))
-        subgraph_edts1 = scaler.transform(subgraph_edts1.reshape(-1,1)).ravel().astype(np.float32) * 1000
-        subgraph_edts1 = torch.from_numpy(subgraph_edts1).to(args.device)
+        scaler1.fit(subgraph_edts1.reshape(-1,1))
+        subgraph_edts1 = scaler1.transform(subgraph_edts1.reshape(-1,1)).ravel().astype(np.float32) * 1000
+        subgraph_edts1 = torch.from_numpy(subgraph_edts1)
         
-        scaler.fit(subgraph_edts2.reshape(-1,1))
-        subgraph_edts2 = scaler.transform(subgraph_edts2.reshape(-1,1)).ravel().astype(np.float32) * 1000
-        subgraph_edts2 = torch.from_numpy(subgraph_edts2).to(args.device)
+        scaler2.fit(subgraph_edts2.reshape(-1,1))
+        subgraph_edts2 = scaler2.transform(subgraph_edts2.reshape(-1,1)).ravel().astype(np.float32) * 1000
+        subgraph_edts2 = torch.from_numpy(subgraph_edts2)
+
+
+
+        # # Ensure subgraph_edts1 and subgraph_edts2 are properly handled
+        # subgraph_edts1 = np.array(subgraph_edts1) if not isinstance(subgraph_edts1, np.ndarray) else subgraph_edts1
+        # subgraph_edts2 = np.array(subgraph_edts2) if not isinstance(subgraph_edts2, np.ndarray) else subgraph_edts2
+
+        # # Handle subgraph_edts1
+        # if subgraph_edts1.size > 0:  # Ensure size attribute works correctly
+        #     scaler1.fit(subgraph_edts1.reshape(-1, 1))  # Fit the scaler
+        #     subgraph_edts1 = scaler1.transform(subgraph_edts1.reshape(-1, 1)).ravel().astype(np.float32) * 1000
+        #     subgraph_edts1 = torch.from_numpy(subgraph_edts1)  # Convert to torch tensor
+        # else:
+        #     print("Warning: subgraph_edts1 is empty. Creating an empty tensor.")
+        #     subgraph_edts1 = torch.tensor([], dtype=torch.float32)
+
+        # # Handle subgraph_edts2
+        # if subgraph_edts2.size > 0:  # Ensure size attribute works correctly
+        #     scaler2.fit(subgraph_edts2.reshape(-1, 1))  # Fit the scaler
+        #     subgraph_edts2 = scaler2.transform(subgraph_edts2.reshape(-1, 1)).ravel().astype(np.float32) * 1000
+        #     subgraph_edts2 = torch.from_numpy(subgraph_edts2)  # Convert to torch tensor
+        # else:
+        #     print("Warning: subgraph_edts2 is empty. Creating an empty tensor.")
+        #     subgraph_edts2 = torch.tensor([], dtype=torch.float32)
+
+
+
+        ###################################################
+        # Compute inds1 and inds2 based on all_edge_indptr
+        all_inds1 = []
+        has_temporal_neighbors1 = []
+        all_edge_indptr1 = subgraph_data1['all_edge_indptr']
+        for i in range(len(all_edge_indptr1) -1):
+            num_edges = all_edge_indptr1[i+1] - all_edge_indptr1[i]
+            all_inds1.extend([args.max_edges * i + j for j in range(num_edges)])
+            has_temporal_neighbors1.append(num_edges > 0)
+
+        all_inds2 = []
+        has_temporal_neighbors2 = []
+        all_edge_indptr2 = subgraph_data2['all_edge_indptr']
+        for i in range(len(all_edge_indptr2) -1):
+            num_edges = all_edge_indptr2[i+1] - all_edge_indptr2[i]
+            all_inds2.extend([args.max_edges * i + j for j in range(num_edges)])
+            has_temporal_neighbors2.append(num_edges > 0)
         
         ###################################################
         # Prepare inputs for the model
         model_inputs1 = [
-            subgraph_edge_feats1,    # [number_of_edges, edge_dims]
-            subgraph_edts1,          # [number_of_edges]
+            subgraph_edge_feats1.to(args.device),    # [number_of_edges, edge_dims]
+            subgraph_edts1.to(args.device),          # [number_of_edges]
             has_temporal_neighbors1, # list of booleans
-            inds1                    # [number_of_edges]
+            torch.tensor(all_inds1).long()                    # [number_of_edges]
         ]
         
         model_inputs2 = [
-            subgraph_edge_feats2,    # [number_of_edges, edge_dims]
-            subgraph_edts2,          # [number_of_edges]
+            subgraph_edge_feats2.to(args.device),    # [number_of_edges, edge_dims]
+            subgraph_edts2.to(args.device),          # [number_of_edges]
             has_temporal_neighbors2, # list of booleans
-            inds2                    # [number_of_edges]
+            torch.tensor(all_inds2).long()                    # [number_of_edges]
         ]
         
         start_time = time.time()
@@ -209,7 +241,7 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     return total_auroc1, total_auprc1, total_auroc2, total_auprc2, return_loss, time_epoch
 
 
-def link_pred_train_dual(model, args, g, df, node_feats, edge_feats):
+def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):
     """
     Train the model for dual link prediction tasks.
     
@@ -226,22 +258,20 @@ def link_pred_train_dual(model, args, g, df, node_feats, edge_feats):
     """
     optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
-    g1, g2 = g
-    df1, df2 = df
     
     ###################################################
     # Get cached subgraphs
     if args.use_cached_subgraph:
-        train_subgraphs1 = pre_compute_subgraphs(args, g1, df1, mode='train')
-        train_subgraphs2 = pre_compute_subgraphs(args, g2, df2, mode='train')
+        train_subgraphs1 = pre_compute_subgraphs(args, g1, df1, mode='train', input_data='edges1')
+        train_subgraphs2 = pre_compute_subgraphs(args, g2, df2, mode='train', input_data="edges2")
     else:
         train_subgraphs1 = get_subgraph_sampler(args, g1, df1, mode='train')
         train_subgraphs2 = get_subgraph_sampler(args, g2, df2, mode='train')
     
-    valid_subgraphs1 = pre_compute_subgraphs(args, g1, df1, mode='valid')
-    valid_subgraphs2 = pre_compute_subgraphs(args, g2, df2, mode='valid')
-    test_subgraphs1  = pre_compute_subgraphs(args, g1, df1, mode='test')
-    test_subgraphs2  = pre_compute_subgraphs(args, g2, df2, mode='test')
+    valid_subgraphs1 = pre_compute_subgraphs(args, g1, df1, mode='valid', input_data='edges1')
+    valid_subgraphs2 = pre_compute_subgraphs(args, g2, df2, mode='valid', input_data="edges2")
+    test_subgraphs1  = pre_compute_subgraphs(args, g1, df1, mode='test', input_data='edges1')
+    test_subgraphs2  = pre_compute_subgraphs(args, g2, df2, mode='test', input_data="edges2")
     
     ###################################################
     # Initialize metrics
@@ -263,7 +293,7 @@ def link_pred_train_dual(model, args, g, df, node_feats, edge_feats):
         'test_loss': [],
     }
     
-    low_loss = float('inf')
+    low_loss = 100000
     best_epoch = -1
     best_test_auc, best_test_ap = 0, 0
     
@@ -312,20 +342,20 @@ def link_pred_train_dual(model, args, g, df, node_feats, edge_feats):
         
         # Train
         train_auc1, train_ap1, train_auc2, train_ap2, train_loss, time_train = run_dual(
-            model, optimizer, args, train_subgraphs1, train_subgraphs2, df1, df2, node_feats, edge_feats, 
+            model, optimizer, args, train_subgraphs1, train_subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2,
             train_AUROC1, train_AUPRC1, train_AUROC2, train_AUPRC2, mode='train'
         )
         
         # Validate
         with torch.no_grad():
             valid_auc1, valid_ap1, valid_auc2, valid_ap2, valid_loss, time_valid = run_dual(
-                model, None, args, valid_subgraphs1, valid_subgraphs2, df1, df2, node_feats, edge_feats, 
+                model, None, args, valid_subgraphs1, valid_subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
                 valid_AUROC1, valid_AUPRC1, valid_AUROC2, valid_AUPRC2, mode='valid'
             )
             
             # Test
             test_auc1, test_ap1, test_auc2, test_ap2, test_loss, time_test = run_dual(
-                model, None, args, test_subgraphs1, test_subgraphs2, df1, df2, node_feats, edge_feats, 
+                model, None, args, test_subgraphs1, test_subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
                 test_AUROC1, test_AUPRC1, test_AUROC2, test_AUPRC2, mode='test'
             )
         

@@ -72,7 +72,7 @@ def get_subgraph_sampler(args, g, df, mode):
 ######################################################################################################
 ######################################################################################################
 # for small dataset, we can cache each graph
-def pre_compute_subgraphs(args, g, df, mode):
+def pre_compute_subgraphs(args, g, df, mode, input_data):
     ###################################################
     # get cached file_name
     if mode == 'train':
@@ -81,15 +81,16 @@ def pre_compute_subgraphs(args, g, df, mode):
         extra_neg_samples = 1
         
     fn = os.path.join(os.getcwd(), 'DATA', args.data, 
-                        '%s_neg_sample_neg%d_bs%d_hops%d_neighbors%d.pickle'%(mode, 
+                        '%s_neg_sample_neg%d_bs%d_hops%d_neighbors%d_%s.pickle'%(mode, 
                                                                             extra_neg_samples, 
                                                                             args.batch_size, 
                                                                             args.sampled_num_hops, 
-                                                                          args.num_neighbors))
+                                                                          args.num_neighbors,input_data))
     ###################################################
 
     # try:
     if os.path.exists(fn):
+        print(f"Loading cached subgraphs from {fn}")
         subgraph_elabel = pickle.load(open(fn, 'rb'))
         # print('load ', fn)
 
@@ -112,7 +113,7 @@ def pre_compute_subgraphs(args, g, df, mode):
 
         loader = cur_df.groupby(cur_df.index // args.batch_size)
         pbar = tqdm(total=len(loader))
-        pbar.set_description('Pre-sampling: %s mode with negative sampleds %s ...'%(mode, extra_neg_samples))
+        pbar.set_description('Pre-sampling: %s mode with negative samples %s ...'%(mode, extra_neg_samples))
 
         ###################################################
         all_subgraphs = []
@@ -137,7 +138,7 @@ def pre_compute_subgraphs(args, g, df, mode):
         try:
             pickle.dump(subgraph_elabel, open(fn, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
         except:
-            print('For some shit reason pickle cannot save ... but anyway ...')
+            print('For some reason pickle cannot save ... but anyway ...')
         
         ###################################################
         
@@ -158,56 +159,32 @@ def get_random_inds(num_subgraph, cached_neg_samples, neg_samples):
 
 
 
-def check_data_leakage(args, g1, df1, g2, df2):
+def check_data_leakage(args, g, df):
     """
-    Double-check to ensure that sampled subgraphs do not leak information from future edges.
-    
-    Args:
-        args: Configuration arguments.
-        g1: Graph for edges1.csv.
-        df1: DataFrame for edges1.csv.
-        g2: Graph for edges2.csv.
-        df2: DataFrame for edges2.csv.
+    This is a function to double if the sampled graph has eid greater than the positive node pairs eid (if no then no data leakage)
     """
     for mode in ['train', 'valid', 'test']:
+
         if mode == 'train':
-            cur_df1 = df1[:args.train_edge_end]
-            cur_df2 = df2[:args.train_edge_end]
+            cur_df = df[:args.train_edge_end]
         elif mode == 'valid':
-            cur_df1 = df1[args.train_edge_end:args.val_edge_end]
-            cur_df2 = df2[args.train_edge_end:args.val_edge_end]
+            cur_df = df[args.train_edge_end:args.val_edge_end]
         elif mode == 'test':
-            cur_df1 = df1[args.val_edge_end:]
-            cur_df2 = df2[args.val_edge_end:]
-    
-        loader1 = cur_df1.groupby(cur_df1.index // args.batch_size)
-        subgraphs1 = pre_compute_subgraphs(args, g1, df1, mode)
-        
-        loader2 = cur_df2.groupby(cur_df2.index // args.batch_size)
-        subgraphs2 = pre_compute_subgraphs(args, g2, df2, mode)
-    
-        for i, (_, rows) in enumerate(loader1):
-            root_nodes = np.concatenate([rows.src.values, rows.dst1.values]).astype(np.int32)
+            cur_df = df[args.val_edge_end:]
+
+        loader = cur_df.groupby(cur_df.index // args.batch_size)
+        subgraphs = pre_compute_subgraphs(args, g, df, mode)
+
+        for i, (_, rows) in enumerate(loader):
+            root_nodes = np.concatenate([rows.src.values, rows.dst.values]).astype(np.int32)
             eids = np.tile(rows.index.values, 2)
-            cur_subgraphs = subgraphs1[i][:args.batch_size*2]
-    
+            cur_subgraphs = subgraphs[i][:args.batch_size*2]
+
             for eid, cur_subgraph in zip(eids, cur_subgraphs):
                 all_eids_in_subgraph = cur_subgraph['eid']
                 if len(all_eids_in_subgraph) == 0:
                     continue
-                # Ensure sampled edges have eid < current eid to prevent leakage
-                assert all(all_eids_in_subgraph < eid), "Data leakage detected in edges1."
-    
-        for i, (_, rows) in enumerate(loader2):
-            root_nodes = np.concatenate([rows.src.values, rows.dst2.values]).astype(np.int32)
-            eids = np.tile(rows.index.values, 2)
-            cur_subgraphs = subgraphs2[i][:args.batch_size*2]
-    
-            for eid, cur_subgraph in zip(eids, cur_subgraphs):
-                all_eids_in_subgraph = cur_subgraph['eid']
-                if len(all_eids_in_subgraph) == 0:
-                    continue
-                # Ensure sampled edges have eid < current eid to prevent leakage
-                assert all(all_eids_in_subgraph < eid), "Data leakage detected in edges2."
-    
+                # all edges in the sampled graph has eid smaller than the target edge's eid, i.e,. sampled links never seen before
+                assert sum(all_eids_in_subgraph < eid) == len(all_eids_in_subgraph)
+                
     print('Does not detect information leakage ...')

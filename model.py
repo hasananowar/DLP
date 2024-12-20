@@ -423,16 +423,14 @@ class STHN_Dual_Interface(nn.Module):
         if self.time_feats_dim > 0:
             self.base_model = Patch_Encoding(**mlp_mixer_configs)
 
-        self.edge_predictor1 = EdgePredictor_per_node(**edge_predictor_configs)        
-        self.edge_predictor2 = EdgePredictor_per_node(**edge_predictor_configs)        
+        self.edge_predictor = EdgePredictor_per_node(**edge_predictor_configs)              
         self.criterion = nn.BCEWithLogitsLoss(reduction='none') 
         self.reset_parameters()            
 
     def reset_parameters(self):
         if self.time_feats_dim > 0:
             self.base_model.reset_parameters()
-        self.edge_predictor1.reset_parameters()
-        self.edge_predictor2.reset_parameters()
+        self.edge_predictor.reset_parameters()
 
     def forward(self, model_inputs1, model_inputs2, neg_samples, node_feats):        
         # Predict for dst1
@@ -465,10 +463,8 @@ class STHN_Dual_Interface(nn.Module):
         else:
             raise ValueError('Either time_feats_dim or node_feats_dim must be larger than 0!')
 
-        # Predict for dst1 and dst2
-        pred_pos1, pred_neg1 = self.edge_predictor1(x, neg_samples=neg_samples)
-        pred_pos2, pred_neg2 = self.edge_predictor2(x, neg_samples=neg_samples)
-        return pred_pos1, pred_neg1, pred_pos2, pred_neg2
+        pred_pos, pred_neg = self.edge_predictor(x, neg_samples=neg_samples)
+        return pred_pos, pred_neg
 ################################################################################################
 ################################################################################################
 ################################################################################################

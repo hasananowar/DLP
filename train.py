@@ -23,7 +23,7 @@ def get_args():
     parser=argparse.ArgumentParser()
     parser.add_argument('--data', type=str, default='HB', help="Base directory for the data files")
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--batch_size', type=int, default=10)
+    parser.add_argument('--batch_size', type=int, default=600)
     parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--max_edges', type=int, default=50)
     parser.add_argument('--num_edgeType', type=int, default=0, help='num of edgeType')
@@ -97,13 +97,13 @@ def load_graph(d):
     g1 = np.load(f'DATA/{d}/edges1.npz')
     df2 = pd.read_csv(f'DATA/{d}/edges2.csv')
     g2 = np.load(f'DATA/{d}/edges2.npz')
-    return g1, df1, g2, df2
+    return g1, g2, df1, df2
 
 def load_all_data(args):
 
     # load graph
     # g, df = load_graph(args.data)
-    g1, df1, g2, df2 = load_graph(args.data)
+    g1, g2, df1, df2 = load_graph(args.data)
     print(f"Loaded graphs and data from DATA/{args.data}")
 
     # Determine split indices based on one of the datasets (assuming they are aligned)

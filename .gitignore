@@ -10,6 +10,7 @@ logs/
 *.npy
 *.npz
 *.parquet
+*.pickle
 
 # Jupyter Notebook
 .ipynb_checkpoints/

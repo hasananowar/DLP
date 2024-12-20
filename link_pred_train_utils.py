@@ -101,7 +101,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         # Construct mini-batch giant graphs for both subgraphs
         subgraph_data1 = construct_mini_batch_giant_graph(subgraph_data1, args.max_edges)
         subgraph_data2 = construct_mini_batch_giant_graph(subgraph_data2, args.max_edges)
-        print_subgraph_data(subgraph_data1)
         
         
         ###################################################
@@ -169,31 +168,31 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         has_temporal_neighbors1 = []
         all_edge_indptr1 = subgraph_data1['all_edge_indptr']
         for i in range(len(all_edge_indptr1) -1):
-            num_edges = all_edge_indptr1[i+1] - all_edge_indptr1[i]
-            all_inds1.extend([args.max_edges * i + j for j in range(num_edges)])
-            has_temporal_neighbors1.append(num_edges > 0)
+            num_edges1 = all_edge_indptr1[i+1] - all_edge_indptr1[i]
+            all_inds1.extend([args.max_edges * i + j for j in range(num_edges1)])
+            has_temporal_neighbors1.append(num_edges1 > 0)
 
         all_inds2 = []
         has_temporal_neighbors2 = []
         all_edge_indptr2 = subgraph_data2['all_edge_indptr']
         for i in range(len(all_edge_indptr2) -1):
-            num_edges = all_edge_indptr2[i+1] - all_edge_indptr2[i]
-            all_inds2.extend([args.max_edges * i + j for j in range(num_edges)])
-            has_temporal_neighbors2.append(num_edges > 0)
+            num_edges2 = all_edge_indptr2[i+1] - all_edge_indptr2[i]
+            all_inds2.extend([args.max_edges * i + j for j in range(num_edges2)])
+            has_temporal_neighbors2.append(num_edges2 > 0)
         
         ###################################################
         # Prepare inputs for the model
         model_inputs1 = [
             subgraph_edge_feats1.to(args.device),    # [number_of_edges, edge_dims]
             subgraph_edts1.to(args.device),          # [number_of_edges]
-            has_temporal_neighbors1, # list of booleans
+            len(has_temporal_neighbors1), # list of booleans
             torch.tensor(all_inds1).long()                    # [number_of_edges]
         ]
         
         model_inputs2 = [
             subgraph_edge_feats2.to(args.device),    # [number_of_edges, edge_dims]
             subgraph_edts2.to(args.device),          # [number_of_edges]
-            has_temporal_neighbors2, # list of booleans
+            len(has_temporal_neighbors2), # list of booleans
             torch.tensor(all_inds2).long()                    # [number_of_edges]
         ]
         
@@ -258,6 +257,19 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     """
     optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
+    # data = g2
+    # # Access the contents
+    # indptr = data['indptr']
+    # indices = data['indices']
+    # ts = data['ts']
+    # eid = data['eid']
+
+    # # Print the data to verify
+    # print("indptr:", indptr)
+    # print("indices:", indices)
+    # print("timestamps (ts):", ts)
+    # print("edge IDs (eid):", eid)
+
     
     ###################################################
     # Get cached subgraphs

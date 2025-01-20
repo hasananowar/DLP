@@ -362,16 +362,84 @@ class EdgePredictor_per_node(torch.nn.Module):
         self.dst_fc.reset_parameters()
         self.out_fc.reset_parameters()
 
-    def forward(self, h, neg_samples=1):
-        num_edge = h.shape[0]//(neg_samples + 2)
-        h_src = self.src_fc(h[:num_edge])
-        h_pos_dst = self.dst_fc(h[num_edge:2 * num_edge])
-        h_neg_dst = self.dst_fc(h[2 * num_edge:])
+    def forward(self, h1, h2, neg_samples=1):
+        num_edge1 = h1.shape[0]//(neg_samples + 2)
+        h_src1 = self.src_fc(h1[:num_edge1])
+        h_pos_dst1 = self.dst_fc(h1[num_edge1:2 * num_edge1])
+        h_neg_dst1 = self.dst_fc(h1[2 * num_edge1:])
+
+
+        num_edge2 = h2.shape[0]//(neg_samples + 2)
+        h_src2 = self.src_fc(h2[:num_edge2])
+        h_pos_dst2 = self.dst_fc(h2[num_edge2:2 * num_edge2])
+        h_neg_dst2 = self.dst_fc(h2[2 * num_edge2:])
+
+        h_src_combined = (h_src1 + h_src2) / 2
+        # h_src_combined = torch.max(h_src1, h_src2)
+        # h_src_combined = torch.cat([h_src1, h_src2], dim=1)
+        # h_src_combined = torch.nn.Linear(h_src_combined.size(1), h_src1.size(1))(h_src_combined)    
         
-        h_pos_edge = torch.nn.functional.relu(h_src + h_pos_dst)
-        h_neg_edge = torch.nn.functional.relu(h_src.tile(neg_samples, 1) + h_neg_dst)
+        h_pos_edge = torch.nn.functional.relu(h_src_combined + h_pos_dst1 + h_pos_dst2)
+        h_neg_edge = torch.nn.functional.relu(h_src_combined.tile(neg_samples, 1) + h_neg_dst1 + h_neg_dst2)
         
         return self.out_fc(h_pos_edge), self.out_fc(h_neg_edge)
+    
+
+class Dual_Interface(nn.Module):
+    def __init__(self, mlp_mixer_configs, edge_predictor_configs):
+        super(Dual_Interface, self).__init__()
+
+        self.time_feats_dim = edge_predictor_configs['dim_in_time']
+        self.node_feats_dim = edge_predictor_configs['dim_in_node']
+
+        if self.time_feats_dim > 0:
+            self.base_model = Patch_Encoding(**mlp_mixer_configs)
+
+        self.edge_predictor = EdgePredictor_per_node(**edge_predictor_configs)              
+        self.criterion = nn.BCEWithLogitsLoss(reduction='none') 
+        self.reset_parameters()            
+
+    def reset_parameters(self):
+        if self.time_feats_dim > 0:
+            self.base_model.reset_parameters()
+        self.edge_predictor.reset_parameters()
+
+    def forward(self, model_inputs1, model_inputs2, neg_samples, node_feats):        
+        pred_pos1, pred_neg1 = self.predict(model_inputs1, model_inputs2, neg_samples, node_feats)
+        all_pred1 = torch.cat((pred_pos1, pred_neg1), dim=0)
+        all_edge_label1 = torch.cat((torch.ones_like(pred_pos1), 
+                                     torch.zeros_like(pred_neg1)), dim=0)
+        loss = self.criterion(all_pred1, all_edge_label1).mean()
+
+        # # Predict for dst2
+        # pred_pos2, pred_neg2 = self.predict(model_inputs2, neg_samples, node_feats)
+        # all_pred2 = torch.cat((pred_pos2, pred_neg2), dim=0)
+        # all_edge_label2 = torch.cat((torch.ones_like(pred_pos2), 
+        #                              torch.zeros_like(pred_neg2)), dim=0)
+        # loss2 = self.criterion(all_pred2, all_edge_label2).mean()
+
+        # # Total loss
+        # total_loss = loss1 + loss2
+
+        return loss, all_pred1, all_edge_label1
+
+    def predict(self, model_inputs1, model_inputs2, neg_samples, node_feats):
+        if self.time_feats_dim > 0 and self.node_feats_dim == 0:
+            x = self.base_model(*model_inputs1)
+            y = self.base_model(*model_inputs2)
+        elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
+            x = self.base_model(*model_inputs1)
+            x = torch.cat([x, node_feats], dim=1)
+            y = self.base_model(*model_inputs2)
+            y = torch.cat([y, node_feats], dim=1)
+        elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
+            x = node_feats
+            y = node_feats
+        else: 
+            raise ValueError('Either time_feats_dim or node_feats_dim must be larger than 0!')
+
+        pred_pos, pred_neg = self.edge_predictor(x, y, neg_samples=neg_samples)
+        return pred_pos, pred_neg
     
 
 
@@ -509,7 +577,7 @@ class STHN_Dual_Interface(nn.Module):
             x = torch.cat([x, node_feats], dim=1)
         elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
             x = node_feats
-        else:
+        else: 
             raise ValueError('Either time_feats_dim or node_feats_dim must be larger than 0!')
 
         pred_pos, pred_neg = self.edge_predictor(x, neg_samples=neg_samples)

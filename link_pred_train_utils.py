@@ -13,7 +13,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
-             MLAUROC1, MLAUPRC1, MLAUROC2, MLAUPRC2, mode):
+             MLAUROC1, MLAUPRC1, mode):
     """
     Executes a training or evaluation epoch for dual link prediction tasks.
     """
@@ -70,8 +70,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     loss_lst = []
     MLAUROC1.reset()
     MLAUPRC1.reset()
-    MLAUROC2.reset()
-    MLAUPRC2.reset()
     scaler1 = MinMaxScaler()
     scaler2= MinMaxScaler()
     
@@ -199,12 +197,19 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         start_time = time.time()
         
         # Forward pass through the model
-        loss, preds1, edge_labels1, preds2, edge_labels2 = model(
+        loss, preds1, edge_labels1= model(
             model_inputs1, 
             model_inputs2, 
             neg_samples=max(neg_samples1, neg_samples2),  # Ensure consistency
             node_feats=subgraph_node_feats1  # Assuming node_feats1 and node_feats2 are similar
         )
+
+        # loss, preds1, edge_labels1, preds2, edge_labels2 = model(
+        #     model_inputs1, 
+        #     model_inputs2, 
+        #     neg_samples=max(neg_samples1, neg_samples2),  # Ensure consistency
+        #     node_feats=subgraph_node_feats1  # Assuming node_feats1 and node_feats2 are similar
+        # )
         
         if mode == 'train' and optimizer is not None:
             optimizer.zero_grad()
@@ -218,8 +223,8 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         MLAUROC1.update(preds1, edge_labels1)
         MLAUPRC1.update(preds1, edge_labels1)
         
-        MLAUROC2.update(preds2, edge_labels2)
-        MLAUPRC2.update(preds2, edge_labels2)
+        # MLAUROC2.update(preds2, edge_labels2)
+        # MLAUPRC2.update(preds2, edge_labels2)
         
         # Accumulate loss
         loss_lst.append(float(loss))
@@ -231,13 +236,13 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     # Compute final metrics
     total_auroc1 = MLAUROC1.compute()
     total_auprc1 = MLAUPRC1.compute()
-    total_auroc2 = MLAUROC2.compute()
-    total_auprc2 = MLAUPRC2.compute()
+    # total_auroc2 = MLAUROC2.compute()
+    # total_auprc2 = MLAUPRC2.compute()
     
-    print('%s mode with time %.4f, AUROC1 %.4f, AUPRC1 %.4f, AUROC2 %.4f, AUPRC2 %.4f, loss %.4f'%(mode, time_epoch, total_auroc1, total_auprc1, total_auroc2, total_auprc2, loss.item()))
+    print('%s mode with time %.4f, AUROC1 %.4f, AUPRC1 %.4f, loss %.4f'%(mode, time_epoch, total_auroc1, total_auprc1, loss.item()))
     
     return_loss = np.mean(loss_lst)
-    return total_auroc1, total_auprc1, total_auroc2, total_auprc2, return_loss, time_epoch
+    return total_auroc1, total_auprc1, return_loss, time_epoch
 
 
 def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):
@@ -256,21 +261,8 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         best_auc_model: The best-performing model based on validation loss.
     """
     optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    
-    # data = g2
-    # # Access the contents
-    # indptr = data['indptr']
-    # indices = data['indices']
-    # ts = data['ts']
-    # eid = data['eid']
 
-    # # Print the data to verify
-    # print("indptr:", indptr)
-    # print("indices:", indices)
-    # print("timestamps (ts):", ts)
-    # print("edge IDs (eid):", eid)
 
-    
     ###################################################
     # Get cached subgraphs
     if args.use_cached_subgraph:
@@ -291,15 +283,9 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'train_ap1': [],
         'valid_ap1': [],
         'test_ap1' : [],
-        'train_ap2': [],
-        'valid_ap2': [],
-        'test_ap2' : [],
         'train_auc1': [],
         'valid_auc1': [],
         'test_auc1' : [],
-        'train_auc2': [],
-        'valid_auc2': [],
-        'test_auc2' : [],
         'train_loss': [],
         'valid_loss': [],
         'test_loss': [],
@@ -319,15 +305,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         train_AUPRC1 = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
         valid_AUPRC1 = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
         test_AUPRC1 = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
-        
-        # Metrics for dst2
-        train_AUROC2 = MulticlassAUROC(num_classes, average="macro", thresholds=None)
-        valid_AUROC2 = MulticlassAUROC(num_classes, average="macro", thresholds=None)
-        test_AUROC2 = MulticlassAUROC(num_classes, average="macro", thresholds=None)
-        
-        train_AUPRC2 = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
-        valid_AUPRC2 = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
-        test_AUPRC2 = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
+      
     else:
         # Binary metrics for dst1
         train_AUROC1 = BinaryAUROC(thresholds=None)
@@ -338,14 +316,6 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         valid_AUPRC1 = BinaryAveragePrecision(thresholds=None)
         test_AUPRC1 = BinaryAveragePrecision(thresholds=None)
         
-        # Binary metrics for dst2
-        train_AUROC2 = BinaryAUROC(thresholds=None)
-        valid_AUROC2 = BinaryAUROC(thresholds=None)
-        test_AUROC2 = BinaryAUROC(thresholds=None)
-        
-        train_AUPRC2 = BinaryAveragePrecision(thresholds=None)
-        valid_AUPRC2 = BinaryAveragePrecision(thresholds=None)
-        test_AUPRC2 = BinaryAveragePrecision(thresholds=None)
     
     ###################################################
     # Training loop
@@ -353,22 +323,22 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         print(f'>>> Epoch {epoch + 1}')
         
         # Train
-        train_auc1, train_ap1, train_auc2, train_ap2, train_loss, time_train = run_dual(
+        train_auc1, train_ap1, train_loss, time_train = run_dual(
             model, optimizer, args, train_subgraphs1, train_subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2,
-            train_AUROC1, train_AUPRC1, train_AUROC2, train_AUPRC2, mode='train'
+            train_AUROC1, train_AUPRC1, mode='train'
         )
         
         # Validate
         with torch.no_grad():
-            valid_auc1, valid_ap1, valid_auc2, valid_ap2, valid_loss, time_valid = run_dual(
+            valid_auc1, valid_ap1, valid_loss, time_valid = run_dual(
                 model, None, args, valid_subgraphs1, valid_subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
-                valid_AUROC1, valid_AUPRC1, valid_AUROC2, valid_AUPRC2, mode='valid'
+                valid_AUROC1, valid_AUPRC1,  mode='valid'
             )
             
             # Test
-            test_auc1, test_ap1, test_auc2, test_ap2, test_loss, time_test = run_dual(
+            test_auc1, test_ap1, test_loss, time_test = run_dual(
                 model, None, args, test_subgraphs1, test_subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
-                test_AUROC1, test_AUPRC1, test_AUROC2, test_AUPRC2, mode='test'
+                test_AUROC1, test_AUPRC1, mode='test'
             )
         
         # Check for improvement
@@ -376,8 +346,8 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
             best_auc_model = copy.deepcopy(model).cpu()
             low_loss = valid_loss
             best_epoch = epoch
-            best_test_auc = ((test_auc1 + test_auc2) / 2)
-            best_test_ap = ((test_ap1 + test_ap2) / 2)
+            best_test_auc = test_auc1
+            best_test_ap = test_ap1  
         
         # Early stopping
         if epoch > best_epoch + 20:
@@ -388,29 +358,21 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         all_results['train_ap1'].append(train_ap1)
         all_results['valid_ap1'].append(valid_ap1)
         all_results['test_ap1'].append(test_ap1)
-        
-        all_results['train_ap2'].append(train_ap2)
-        all_results['valid_ap2'].append(valid_ap2)
-        all_results['test_ap2'].append(test_ap2)
-        
+
         all_results['train_auc1'].append(train_auc1)
         all_results['valid_auc1'].append(valid_auc1)
         all_results['test_auc1'].append(test_auc1)
-        
-        all_results['train_auc2'].append(train_auc2)
-        all_results['valid_auc2'].append(valid_auc2)
-        all_results['test_auc2'].append(test_auc2)
         
         all_results['train_loss'].append(train_loss)
         all_results['valid_loss'].append(valid_loss)
         all_results['test_loss'].append(test_loss)
         
-        print(f"Train: AUROC1 {train_auc1:.4f}, AUPRC1 {train_ap1:.4f}, AUROC2 {train_auc2:.4f}, AUPRC2 {train_ap2:.4f}, Loss {train_loss:.4f}")
-        print(f"Valid: AUROC1 {valid_auc1:.4f}, AUPRC1 {valid_ap1:.4f}, AUROC2 {valid_auc2:.4f}, AUPRC2 {valid_ap2:.4f}, Loss {valid_loss:.4f}")
-        print(f"Test: AUROC1 {test_auc1:.4f}, AUPRC1 {test_ap1:.4f}, AUROC2 {test_auc2:.4f}, AUPRC2 {test_ap2:.4f}, Loss {test_loss:.4f}")
+        print(f"Train: AUROC1 {train_auc1:.4f}, AUPRC1 {train_ap1:.4f}, Loss {train_loss:.4f}")
+        print(f"Valid: AUROC1 {valid_auc1:.4f}, AUPRC1 {valid_ap1:.4f},  Loss {valid_loss:.4f}")
+        print(f"Test: AUROC1 {test_auc1:.4f}, AUPRC1 {test_ap1:.4f},  Loss {test_loss:.4f}")
     
     print(f'Best Test AUROC: {best_test_auc:.4f}, AUPRC: {best_test_ap:.4f}')
-    return best_auc_model
+    return best_auc_model, all_results
 
 
 def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args):

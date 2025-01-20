@@ -8,6 +8,8 @@ import os
 import pandas as pd
 import random
 
+import optuna
+
 ####################################################################
 ####################################################################
 ####################################################################
@@ -214,6 +216,46 @@ def load_model_dual(args):
 ####################################################################
 ####################################################################
 
+def objective(trial, args):
+    # Sample hyperparameters
+    args.lr = trial.suggest_loguniform("lr", 1e-6, 1e-2)
+    args.weight_decay = trial.suggest_loguniform("weight_decay", 1e-6, 1e-2)
+    args.dropout = trial.suggest_float("dropout", 0.0, 0.5)
+    args.hidden_dims = trial.suggest_int("hidden_dims", 32, 512, step=32)
+    args.num_layers = trial.suggest_int("num_layers", 1, 5)
+    args.batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256, 512])
+    args.max_edges = trial.suggest_int("max_edges", 10, 100, step=10)
+    args.window_size = trial.suggest_int("window_size", 2, 10)
+    args.channel_expansion_factor = trial.suggest_int("channel_expansion_factor", 1, 4)
+    args.num_neighbors = trial.suggest_int("num_neighbors", 10, 100, step=10)
+    args.time_dims = trial.suggest_int("time_dims", 16, 256, step=16)
+    args.neg_samples = trial.suggest_int("neg_samples", 1, 10)
+
+    # Load features and graphs
+    node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
+
+    # Load model
+    model, args, link_pred_train_dual = load_model_dual(args)
+
+    # Train model
+    best_model, all_results = link_pred_train_dual(
+        model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2
+    )
+
+    # Extract validation loss
+    valid_loss = all_results["valid_loss"][-1]
+
+    # Save best model
+    if valid_loss < objective.best_loss:
+        torch.save(best_model.state_dict(), f"best_model_trial_{trial.number}.pt")
+        objective.best_loss = valid_loss
+
+    print(f"Trial {trial.number}: Loss {valid_loss:.4f}, Params: {trial.params}")
+    return valid_loss
+
+# Initialize best loss
+objective.best_loss = float("inf")
+
 if __name__ == "__main__":
     args = get_args()
 
@@ -229,18 +271,12 @@ if __name__ == "__main__":
     args.device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"
     args.device = torch.device(args.device)
     
-    # Set random seed for reproducibility
-    set_seed(0)
 
-    ###################################################
-    # Load features and graphs
-    node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
-        
-    ###################################################
-    # Load model
-    model, args, link_pred_train_dual = load_model_dual(args)
 
-    ###################################################
-    # Link prediction training
-    print('Train dual link prediction task from scratch ...')
-    model = link_pred_train_dual(model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2)
+    # Set Optuna study
+    study = optuna.create_study(direction="minimize", storage="sqlite:///optuna.db", study_name="link_pred_tuning", load_if_exists=True)
+    study.optimize(lambda trial: objective(trial, args), n_trials=50, n_jobs=4)
+
+    # Print best hyperparameters
+    print("Best hyperparameters:", study.best_params)
+    print("Best validation loss:", study.best_value)

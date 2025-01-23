@@ -350,7 +350,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
             best_test_ap = test_ap1  
         
         # Early stopping
-        if epoch > best_epoch + 20:
+        if epoch > best_epoch + args.early_stop_patience:
             print("Early stopping triggered.")
             break
         
@@ -372,7 +372,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         print(f"Test: AUROC1 {test_auc1:.4f}, AUPRC1 {test_ap1:.4f},  Loss {test_loss:.4f}")
     
     print(f'Best Test AUROC: {best_test_auc:.4f}, AUPRC: {best_test_ap:.4f}')
-    return best_auc_model, all_results
+    return best_auc_model, low_loss
 
 
 def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args):

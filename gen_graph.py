@@ -7,7 +7,7 @@ from tqdm import tqdm
 import os
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--data', default='HB/edges1.csv', type=str, help='dataset name')
+parser.add_argument('--data', default='FILT_HB/edges1.csv', type=str, help='dataset name')
 parser.add_argument('--add_reverse', default=True, action='store_true')
 
 args = parser.parse_args()

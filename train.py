@@ -21,28 +21,28 @@ def print_model_info(model):
 
 def get_args():
     parser=argparse.ArgumentParser()
-    parser.add_argument('--data', type=str, default='HB', help="Base directory for the data files")
+    parser.add_argument('--data', type=str, default='FILT_HB', help="Base directory for the data files")
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--batch_size', type=int, default=600)
-    parser.add_argument('--epochs', type=int, default=1)
-    parser.add_argument('--max_edges', type=int, default=50)
+    parser.add_argument('--batch_size', type=int, default=150)
+    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--max_edges', type=int, default=150)
     parser.add_argument('--num_edgeType', type=int, default=0, help='num of edgeType')
-    parser.add_argument('--lr', type=float, default=0.0005)
-    parser.add_argument('--weight_decay', type=float, default=1e-4)
+    parser.add_argument('--lr', type=float, default=0.0007)
+    parser.add_argument('--weight_decay', type=float, default=4e-5)
     parser.add_argument('--predict_class', action='store_true')
     
     # model
     parser.add_argument('--window_size', type=int, default=5)
-    parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--dropout', type=float, default=0)
     parser.add_argument('--model', type=str, default='sthn') 
     parser.add_argument('--neg_samples', type=int, default=1)
     parser.add_argument('--extra_neg_samples', type=int, default=5)
-    parser.add_argument('--num_neighbors', type=int, default=50)
+    parser.add_argument('--num_neighbors', type=int, default=150)
     parser.add_argument('--channel_expansion_factor', type=int, default=2)
     parser.add_argument('--sampled_num_hops', type=int, default=1)
-    parser.add_argument('--time_dims', type=int, default=100)
-    parser.add_argument('--hidden_dims', type=int, default=100)
-    parser.add_argument('--num_layers', type=int, default=1)
+    parser.add_argument('--time_dims', type=int, default=150)
+    parser.add_argument('--hidden_dims', type=int, default=150)
+    parser.add_argument('--num_layers', type=int, default=4)
     parser.add_argument('--check_data_leakage', action='store_true')
     
     parser.add_argument('--ignore_node_feats', action='store_true')
@@ -57,6 +57,7 @@ def get_args():
 
     parser.add_argument('--use_node_cls', action='store_true')
     parser.add_argument('--use_cached_subgraph', action='store_true')
+    parser.add_argument('--early_stop_patience', type=int, default=20)
     return parser.parse_args()
 
 # utility function

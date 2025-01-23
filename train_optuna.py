@@ -8,7 +8,16 @@ import os
 import pandas as pd
 import random
 
+import json
 import optuna
+import gc
+torch.cuda.empty_cache()
+gc.collect()
+# Add PYTORCH_CUDA_ALLOC_CONF to environment
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
 
 ####################################################################
 ####################################################################
@@ -23,10 +32,10 @@ def print_model_info(model):
 
 def get_args():
     parser=argparse.ArgumentParser()
-    parser.add_argument('--data', type=str, default='HB', help="Base directory for the data files")
+    parser.add_argument('--data', type=str, default='FILT_HB', help="Base directory for the data files")
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=600)
-    parser.add_argument('--epochs', type=int, default=1)
+    parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--max_edges', type=int, default=50)
     parser.add_argument('--num_edgeType', type=int, default=0, help='num of edgeType')
     parser.add_argument('--lr', type=float, default=0.0005)
@@ -59,6 +68,7 @@ def get_args():
 
     parser.add_argument('--use_node_cls', action='store_true')
     parser.add_argument('--use_cached_subgraph', action='store_true')
+    parser.add_argument('--early_stop_patience',type=int, default=10)
     return parser.parse_args()
 
 # utility function
@@ -206,8 +216,8 @@ def load_model_dual(args):
         NotImplementedError
     
     model = STHN_Interface(mixer_configs, edge_predictor_configs)
-    for k, v in model.named_parameters():
-        print(k, v.requires_grad)
+    # for k, v in model.named_parameters():
+    #     print(k, v.requires_grad)
 
     # print_model_info(model)
 
@@ -215,43 +225,71 @@ def load_model_dual(args):
         
 ####################################################################
 ####################################################################
-
 def objective(trial, args):
     # Sample hyperparameters
     args.lr = trial.suggest_loguniform("lr", 1e-6, 1e-2)
     args.weight_decay = trial.suggest_loguniform("weight_decay", 1e-6, 1e-2)
     args.dropout = trial.suggest_float("dropout", 0.0, 0.5)
-    args.hidden_dims = trial.suggest_int("hidden_dims", 32, 512, step=32)
+    args.hidden_dims = trial.suggest_int("hidden_dims", 50, 200, step=50)
     args.num_layers = trial.suggest_int("num_layers", 1, 5)
-    args.batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256, 512])
-    args.max_edges = trial.suggest_int("max_edges", 10, 100, step=10)
-    args.window_size = trial.suggest_int("window_size", 2, 10)
-    args.channel_expansion_factor = trial.suggest_int("channel_expansion_factor", 1, 4)
-    args.num_neighbors = trial.suggest_int("num_neighbors", 10, 100, step=10)
-    args.time_dims = trial.suggest_int("time_dims", 16, 256, step=16)
-    args.neg_samples = trial.suggest_int("neg_samples", 1, 10)
+    args.batch_size = trial.suggest_int("batch_size", 100, 300, step=50)
+    args.max_edges = trial.suggest_int("max_edges", 50, 150, step=50)
+    args.channel_expansion_factor = trial.suggest_int("channel_expansion_factor", 1, 3)
+    args.num_neighbors = trial.suggest_int("num_neighbors", 50, 150, step=10)
+
+    print(f"Selected batch_size: {args.batch_size}")
+
+    args.time_dims = args.hidden_dims
 
     # Load features and graphs
-    node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
+    try:
+        node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
+    except Exception as e:
+        print(f"Trial {trial.number} failed during data loading: {e}")
+        return float("inf")
 
     # Load model
     model, args, link_pred_train_dual = load_model_dual(args)
 
-    # Train model
-    best_model, all_results = link_pred_train_dual(
-        model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2
-    )
+    # Train model with error handling
+    try:
+        best_model, best_valid_loss = link_pred_train_dual(
+            model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2
+        )
+    except torch.cuda.OutOfMemoryError:
+        print(f"Trial {trial.number} failed due to CUDA memory error.")
+        torch.cuda.empty_cache()
+        return float("inf")
+    except Exception as e:
+        print(f"Trial {trial.number} failed: {e}")
+        return float("inf")
+    finally:
+        torch.cuda.empty_cache()
+        gc.collect()
 
-    # Extract validation loss
-    valid_loss = all_results["valid_loss"][-1]
+    # Save best model dynamically
+    os.makedirs("models", exist_ok=True)
+    if best_valid_loss < objective.best_loss:
+        torch.save(best_model.state_dict(), f"models/best_model_trial_{trial.number}.pt")
+        objective.best_loss = best_valid_loss
+        with open("models/best_trial.json", "w") as f:
+            json.dump({
+                "best_trial": trial.number,
+                "best_params": trial.params,
+                "best_valid_loss": best_valid_loss
+            }, f)
 
-    # Save best model
-    if valid_loss < objective.best_loss:
-        torch.save(best_model.state_dict(), f"best_model_trial_{trial.number}.pt")
-        objective.best_loss = valid_loss
+    # Log all trials
+    with open("models/all_trials.json", "a") as f:
+        json.dump({
+            "trial": trial.number,
+            "params": trial.params,
+            "valid_loss": best_valid_loss
+        }, f)
+        f.write("\n")
 
-    print(f"Trial {trial.number}: Loss {valid_loss:.4f}, Params: {trial.params}")
-    return valid_loss
+    print(f"Trial {trial.number}: Loss {best_valid_loss:.4f}, Hyperparams: {trial.params}")
+    return best_valid_loss
 
 # Initialize best loss
 objective.best_loss = float("inf")
@@ -261,8 +299,8 @@ if __name__ == "__main__":
 
     # Set specific arguments related to graph structure and feature usage
     args.use_graph_structure = True
-    args.ignore_node_feats = True  # We only use graph structure
-    args.use_type_feats = True     # Type encoding
+    args.ignore_node_feats = True
+    args.use_type_feats = True
     args.use_cached_subgraph = True
 
     print(args)
@@ -270,13 +308,25 @@ if __name__ == "__main__":
     # Determine device
     args.device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"
     args.device = torch.device(args.device)
-    
-
 
     # Set Optuna study
-    study = optuna.create_study(direction="minimize", storage="sqlite:///optuna.db", study_name="link_pred_tuning", load_if_exists=True)
-    study.optimize(lambda trial: objective(trial, args), n_trials=50, n_jobs=4)
+    study = optuna.create_study(
+        direction="minimize",
+        storage="sqlite:///optuna.db",
+        study_name="link_pred_tuning",
+        load_if_exists=True,
+        pruner=optuna.pruners.MedianPruner()
+    )
+    study.optimize(lambda trial: objective(trial, args), n_trials=50, n_jobs=4, show_progress_bar=True)
 
-    # Print best hyperparameters
+    # Save final best parameters and trial metadata
+    with open("models/final_best_params.json", "w") as f:
+        json.dump({
+            "best_trial": study.best_trial.number,
+            "best_params": study.best_params,
+            "best_validation_loss": study.best_value
+        }, f)
+
     print("Best hyperparameters:", study.best_params)
     print("Best validation loss:", study.best_value)
+    print("Saved to 'final_best_params.json'")

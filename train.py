@@ -57,7 +57,7 @@ def get_args():
 
     parser.add_argument('--use_node_cls', action='store_true')
     parser.add_argument('--use_cached_subgraph', action='store_true')
-    parser.add_argument('--early_stop_patience', type=int, default=20)
+    parser.add_argument('--early_stop_patience', type=int, default=30)
     return parser.parse_args()
 
 # utility function

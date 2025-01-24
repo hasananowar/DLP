@@ -16,6 +16,7 @@ gc.collect()
 # Add PYTORCH_CUDA_ALLOC_CONF to environment
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+os.environ["TORCH_USE_CUDA_DSA"] = "1"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 
@@ -68,7 +69,7 @@ def get_args():
 
     parser.add_argument('--use_node_cls', action='store_true')
     parser.add_argument('--use_cached_subgraph', action='store_true')
-    parser.add_argument('--early_stop_patience',type=int, default=10)
+    parser.add_argument('--early_stop_patience',type=int, default=30)
     return parser.parse_args()
 
 # utility function
@@ -227,15 +228,15 @@ def load_model_dual(args):
 ####################################################################
 def objective(trial, args):
     # Sample hyperparameters
-    args.lr = trial.suggest_loguniform("lr", 1e-6, 1e-2)
-    args.weight_decay = trial.suggest_loguniform("weight_decay", 1e-6, 1e-2)
-    args.dropout = trial.suggest_float("dropout", 0.0, 0.5)
+    args.lr = trial.suggest_loguniform("lr", 1e-6, 1e-4)
+    args.weight_decay = trial.suggest_loguniform("weight_decay", 1e-6, 1e-4)
+    args.dropout = trial.suggest_float("dropout", 0.0, 0.2)
     args.hidden_dims = trial.suggest_int("hidden_dims", 50, 200, step=50)
     args.num_layers = trial.suggest_int("num_layers", 1, 5)
-    args.batch_size = trial.suggest_int("batch_size", 100, 300, step=50)
-    args.max_edges = trial.suggest_int("max_edges", 50, 150, step=50)
+    args.batch_size = trial.suggest_int("batch_size", 100, 1000, step=100)
+    # args.max_edges = trial.suggest_int("max_edges", 100, 500, step=50)
     args.channel_expansion_factor = trial.suggest_int("channel_expansion_factor", 1, 3)
-    args.num_neighbors = trial.suggest_int("num_neighbors", 50, 150, step=10)
+    args.num_neighbors = trial.suggest_int("num_neighbors", 50, 200, step=50)
 
     print(f"Selected batch_size: {args.batch_size}")
 
@@ -312,7 +313,7 @@ if __name__ == "__main__":
     # Set Optuna study
     study = optuna.create_study(
         direction="minimize",
-        storage="sqlite:///optuna.db",
+        storage="sqlite:///models/optuna.db",
         study_name="link_pred_tuning",
         load_if_exists=True,
         pruner=optuna.pruners.MedianPruner()

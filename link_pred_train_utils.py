@@ -204,12 +204,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             node_feats=subgraph_node_feats1  # Assuming node_feats1 and node_feats2 are similar
         )
 
-        # loss, preds1, edge_labels1, preds2, edge_labels2 = model(
-        #     model_inputs1, 
-        #     model_inputs2, 
-        #     neg_samples=max(neg_samples1, neg_samples2),  # Ensure consistency
-        #     node_feats=subgraph_node_feats1  # Assuming node_feats1 and node_feats2 are similar
-        # )
         
         if mode == 'train' and optimizer is not None:
             optimizer.zero_grad()
@@ -222,9 +216,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         # Directly pass logits to metrics; they will apply sigmoid internally
         MLAUROC1.update(preds1, edge_labels1)
         MLAUPRC1.update(preds1, edge_labels1)
-        
-        # MLAUROC2.update(preds2, edge_labels2)
-        # MLAUPRC2.update(preds2, edge_labels2)
         
         # Accumulate loss
         loss_lst.append(float(loss))
@@ -371,7 +362,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         print(f"Valid: AUROC1 {valid_auc1:.4f}, AUPRC1 {valid_ap1:.4f},  Loss {valid_loss:.4f}")
         print(f"Test: AUROC1 {test_auc1:.4f}, AUPRC1 {test_ap1:.4f},  Loss {test_loss:.4f}")
     
-    print(f'Best Test AUROC: {best_test_auc:.4f}, AUPRC: {best_test_ap:.4f}')
+    print(f'Best Epoch: {best_epoch}, Best Test AUROC: {best_test_auc:.4f}, Best Test AUPRC: {best_test_ap:.4f}, Best Valid Loss: {low_loss:.4f}')
     return best_auc_model, low_loss
 
 

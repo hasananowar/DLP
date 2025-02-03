@@ -374,13 +374,15 @@ class EdgePredictor_per_node(torch.nn.Module):
         h_pos_dst2 = self.dst_fc(h2[num_edge2:2 * num_edge2])
         h_neg_dst2 = self.dst_fc(h2[2 * num_edge2:])
 
-        h_src_combined = (h_src1 + h_src2) / 2
-        # h_src_combined = torch.max(h_src1, h_src2)
-        # h_src_combined = torch.cat([h_src1, h_src2], dim=1)
-        # h_src_combined = torch.nn.Linear(h_src_combined.size(1), h_src1.size(1))(h_src_combined)    
+        h_src_combined = h_src1 + h_src2 
         
         h_pos_edge = torch.nn.functional.relu(h_src_combined + h_pos_dst1 + h_pos_dst2)
-        h_neg_edge = torch.nn.functional.relu(h_src_combined.tile(neg_samples, 1) + h_neg_dst1 + h_neg_dst2)
+        # h_neg_edge = torch.nn.functional.relu(h_src_combined.tile(neg_samples, 1) + h_neg_dst1 + h_neg_dst2)
+        # Concatenate all negative edges
+        h_neg_edge1 = torch.nn.functional.relu(h_src_combined.tile(neg_samples, 1) + h_neg_dst1 + h_neg_dst2)
+        h_neg_edge2 = torch.nn.functional.relu(h_src_combined.tile(neg_samples, 1) + h_pos_dst1 + h_neg_dst2)
+        h_neg_edge3 = torch.nn.functional.relu(h_src_combined.tile(neg_samples, 1) + h_pos_dst2 + h_neg_dst1)
+        h_neg_edge = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
         
         return self.out_fc(h_pos_edge), self.out_fc(h_neg_edge)
     

@@ -228,15 +228,15 @@ def load_model_dual(args):
 ####################################################################
 def objective(trial, args):
     # Sample hyperparameters
-    args.lr = trial.suggest_loguniform("lr", 1e-6, 1e-4)
+    args.lr = trial.suggest_loguniform("lr", 1e-5, 1e-3)
     args.weight_decay = trial.suggest_loguniform("weight_decay", 1e-6, 1e-4)
     args.dropout = trial.suggest_float("dropout", 0.0, 0.2)
-    args.hidden_dims = trial.suggest_int("hidden_dims", 50, 200, step=50)
-    args.num_layers = trial.suggest_int("num_layers", 1, 5)
+    # args.hidden_dims = trial.suggest_int("hidden_dims", 50, 200, step=50)
+    args.num_layers = trial.suggest_int("num_layers", 1, 3)
     args.batch_size = trial.suggest_int("batch_size", 100, 1000, step=100)
-    # args.max_edges = trial.suggest_int("max_edges", 100, 500, step=50)
+    args.max_edges = trial.suggest_int("max_edges", 50, 500, step=50)
     args.channel_expansion_factor = trial.suggest_int("channel_expansion_factor", 1, 3)
-    args.num_neighbors = trial.suggest_int("num_neighbors", 50, 200, step=50)
+    args.num_neighbors = trial.suggest_int("num_neighbors", 10, 100, step=10)
 
     print(f"Selected batch_size: {args.batch_size}")
 

@@ -13,7 +13,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
-             MLAUROC, MLAUPRC, mode):
+             MLAUROC1, MLAUPRC1, mode):
     """
     Executes a training or evaluation epoch for dual link prediction tasks.
     """
@@ -68,8 +68,8 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     subgraphs1, elabel1 = subgraphs1
     subgraphs2, elabel2 = subgraphs2
     loss_lst = []
-    MLAUROC.reset()
-    MLAUPRC.reset()
+    MLAUROC1.reset()
+    MLAUPRC1.reset()
     scaler1 = MinMaxScaler()
     scaler2= MinMaxScaler()
     
@@ -179,27 +179,27 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             has_temporal_neighbors2.append(num_edges2 > 0)
         
         ###################################################
-
-        merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)  # [num_edges1 + num_edges2, edge_dims]
-
-        merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0)  # [num_edges1 + num_edges2, 1]
-
-        merged_batch_size = len(has_temporal_neighbors1) + len(has_temporal_neighbors2)  # integer
-
         # Prepare inputs for the model
-        model_inputs = [
-            merged_edge_feats.to(args.device),   
-            merged_edge_ts.to(args.device),     
-            merged_batch_size, 
-            torch.tensor(all_inds1 + all_inds2).long()
+        model_inputs1 = [
+            subgraph_edge_feats1.to(args.device),    # [number_of_edges, edge_dims]
+            subgraph_edts1.to(args.device),          # [number_of_edges]
+            len(has_temporal_neighbors1), # list of booleans
+            torch.tensor(all_inds1).long()                    # [number_of_edges]
         ]
         
+        model_inputs2 = [
+            subgraph_edge_feats2.to(args.device),    # [number_of_edges, edge_dims]
+            subgraph_edts2.to(args.device),          # [number_of_edges]
+            len(has_temporal_neighbors2), # list of booleans
+            torch.tensor(all_inds2).long()                    # [number_of_edges]
+        ]
         
         start_time = time.time()
         
         # Forward pass through the model
-        loss, preds, edge_labels= model(
-            model_inputs, 
+        loss, preds1, edge_labels1= model(
+            model_inputs1, 
+            model_inputs2, 
             neg_samples=max(neg_samples1, neg_samples2),  # Ensure consistency
             node_feats=subgraph_node_feats1  # Assuming node_feats1 and node_feats2 are similar
         )
@@ -214,8 +214,8 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         
         ###################################################
         # Directly pass logits to metrics; they will apply sigmoid internally
-        MLAUROC.update(preds, edge_labels)
-        MLAUPRC.update(preds, edge_labels)
+        MLAUROC1.update(preds1, edge_labels1)
+        MLAUPRC1.update(preds1, edge_labels1)
         
         # Accumulate loss
         loss_lst.append(float(loss))
@@ -225,13 +225,15 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     pbar.close()    
     
     # Compute final metrics
-    total_auroc = MLAUROC.compute()
-    total_auprc = MLAUPRC.compute()
+    total_auroc1 = MLAUROC1.compute()
+    total_auprc1 = MLAUPRC1.compute()
+    # total_auroc2 = MLAUROC2.compute()
+    # total_auprc2 = MLAUPRC2.compute()
     
-    print('%s mode with time %.4f, AUROC1 %.4f, AUPRC1 %.4f, loss %.4f'%(mode, time_epoch, total_auroc, total_auprc, loss.item()))
+    print('%s mode with time %.4f, AUROC1 %.4f, AUPRC1 %.4f, loss %.4f'%(mode, time_epoch, total_auroc1, total_auprc1, loss.item()))
     
     return_loss = np.mean(loss_lst)
-    return total_auroc, total_auprc, return_loss, time_epoch
+    return total_auroc1, total_auprc1, return_loss, time_epoch
 
 
 def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):

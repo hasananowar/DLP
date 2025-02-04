@@ -35,7 +35,7 @@ def get_args():
     parser=argparse.ArgumentParser()
     parser.add_argument('--data', type=str, default='FILT_HB', help="Base directory for the data files")
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--batch_size', type=int, default=600)
+    parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--max_edges', type=int, default=50)
     parser.add_argument('--num_edgeType', type=int, default=0, help='num of edgeType')
@@ -224,21 +224,20 @@ def load_model_dual(args):
 
     return model, args, link_pred_train_dual
         
-####################################################################
-####################################################################
 def objective(trial, args):
+    """Define the hyperparameter search space and train the model with sampled parameters."""
     # Sample hyperparameters
-    args.lr = trial.suggest_loguniform("lr", 1e-5, 1e-3)
-    args.weight_decay = trial.suggest_loguniform("weight_decay", 1e-6, 1e-4)
-    args.dropout = trial.suggest_float("dropout", 0.0, 0.2)
-    # args.hidden_dims = trial.suggest_int("hidden_dims", 50, 200, step=50)
-    args.num_layers = trial.suggest_int("num_layers", 1, 3)
-    args.batch_size = trial.suggest_int("batch_size", 100, 1000, step=100)
-    args.max_edges = trial.suggest_int("max_edges", 50, 500, step=50)
+    args.lr = trial.suggest_loguniform("lr", 1e-4, 1e-3)
+    args.weight_decay = trial.suggest_loguniform("weight_decay", 1e-5, 1e-4)
+    args.dropout = trial.suggest_float("dropout", 0.0, 0.1)
+    args.hidden_dims = trial.suggest_int("hidden_dims", 100, 300, step=50)
+    args.time_dims = args.hidden_dims
+    args.batch_size = trial.suggest_int("batch_size", 100, 300, step=50)
+    # args.max_edges = trial.suggest_int("max_edges", 50, 500, step=50)
     args.channel_expansion_factor = trial.suggest_int("channel_expansion_factor", 1, 3)
     args.num_neighbors = trial.suggest_int("num_neighbors", 10, 100, step=10)
+    args.optimizer = trial.suggest_categorical("optimizer", ["Adam", "SGD", "RMSprop"])
 
-    print(f"Selected batch_size: {args.batch_size}")
 
     args.time_dims = args.hidden_dims
 
@@ -258,9 +257,11 @@ def objective(trial, args):
             model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2
         )
     except torch.cuda.OutOfMemoryError:
-        print(f"Trial {trial.number} failed due to CUDA memory error.")
+        print(f"Trial {trial.number} failed due to CUDA memory error. Retrying with smaller batch size.")
+        args.batch_size = max(100, args.batch_size // 2)
         torch.cuda.empty_cache()
-        return float("inf")
+        gc.collect()
+        return objective(trial, args)
     except Exception as e:
         print(f"Trial {trial.number} failed: {e}")
         return float("inf")
@@ -271,17 +272,11 @@ def objective(trial, args):
     # Save best model dynamically
     os.makedirs("models", exist_ok=True)
     if best_valid_loss < objective.best_loss:
-        torch.save(best_model.state_dict(), f"models/best_model_trial_{trial.number}.pt")
+        torch.save(best_model.state_dict(), f"params/best_model_trial_{trial.number}.pt")
         objective.best_loss = best_valid_loss
-        with open("models/best_trial.json", "w") as f:
-            json.dump({
-                "best_trial": trial.number,
-                "best_params": trial.params,
-                "best_valid_loss": best_valid_loss
-            }, f)
 
     # Log all trials
-    with open("models/all_trials.json", "a") as f:
+    with open("params/all_trials.json", "a") as f:
         json.dump({
             "trial": trial.number,
             "params": trial.params,
@@ -294,6 +289,10 @@ def objective(trial, args):
 
 # Initialize best loss
 objective.best_loss = float("inf")
+
+####################################################################
+# Main Execution
+####################################################################
 
 if __name__ == "__main__":
     args = get_args()
@@ -318,10 +317,10 @@ if __name__ == "__main__":
         load_if_exists=True,
         pruner=optuna.pruners.MedianPruner()
     )
-    study.optimize(lambda trial: objective(trial, args), n_trials=50, n_jobs=4, show_progress_bar=True)
+    study.optimize(lambda trial: objective(trial, args), n_trials=100, n_jobs=1, show_progress_bar=True)
 
     # Save final best parameters and trial metadata
-    with open("models/final_best_params.json", "w") as f:
+    with open("params/final_best_params.json", "w") as f:
         json.dump({
             "best_trial": study.best_trial.number,
             "best_params": study.best_params,
@@ -330,4 +329,3 @@ if __name__ == "__main__":
 
     print("Best hyperparameters:", study.best_params)
     print("Best validation loss:", study.best_value)
-    print("Saved to 'final_best_params.json'")

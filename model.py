@@ -339,10 +339,9 @@ class Patch_Encoding(nn.Module):
 Edge predictor
 """
 
-class EdgePredictor_per_node(torch.nn.Module):
+class EdgePredictor_per_node(nn.Module):
     """
-    out = linear(src_node_feats) + linear(dst_node_feats)
-    out = ReLU(out)
+    Predicts links using a 2-layer MLP on hi || hj || hk.
     """
     def __init__(self, dim_in_time, dim_in_node, predict_class):
         super().__init__()
@@ -350,38 +349,75 @@ class EdgePredictor_per_node(torch.nn.Module):
         self.dim_in_time = dim_in_time
         self.dim_in_node = dim_in_node
 
-        # dim_in_time + dim_in_node
-        self.src_fc = torch.nn.Linear(dim_in_time+dim_in_node, 100)
-        self.dst_fc = torch.nn.Linear(dim_in_time+dim_in_node, 100)
-    
-        self.out_fc = torch.nn.Linear(100, predict_class)
+        # 2-layer MLP on hi || hj || hk
+        self.mlp = nn.Sequential(
+            nn.Linear(3 * (dim_in_time + dim_in_node), 100),
+            nn.ReLU(),
+            nn.Linear(100, predict_class)
+        )
         self.reset_parameters()
-        
-    def reset_parameters(self, ):
-        self.src_fc.reset_parameters()
-        self.dst_fc.reset_parameters()
-        self.out_fc.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.mlp:
+            if isinstance(layer, nn.Linear):
+                layer.reset_parameters()
 
     def forward(self, h, neg_samples=1):
-        num_edge = h.shape[0]//(2*neg_samples + 4)
+        num_edge = h.shape[0] // (2 * neg_samples + 4)
 
-        h_src1 = self.src_fc(h[:num_edge])
-        h_pos_dst1 = self.dst_fc(h[num_edge:2 * num_edge])
-        h_neg_dst1 = self.dst_fc(h[2 * num_edge:3 * num_edge])
-        h_src2 = self.src_fc(h[3 * num_edge:4 * num_edge])
-        h_pos_dst2 = self.dst_fc(h[4 * num_edge:5 * num_edge])
-        h_neg_dst2 = self.dst_fc(h[5 * num_edge:])
+        # Extract node embeddings
+        h_src1 = h[:num_edge]
+        h_pos_dst1 = h[num_edge:2 * num_edge]
+        h_neg_dst1 = h[2 * num_edge:3 * num_edge]
+        h_src2 = h[3 * num_edge:4 * num_edge]
+        h_pos_dst2 = h[4 * num_edge:5 * num_edge]
+        h_neg_dst2 = h[5 * num_edge:]
 
-        h_src_combined = h_src1 + h_src2 
+        # Compute combined source embedding (hi)
+        h_src_combined = h_src1 + h_src2
+
+        # Concatenate hi || hj || hk before passing to MLP
+        h_pos_edge = torch.cat([h_src_combined, h_pos_dst1, h_pos_dst2], dim=-1)
+        h_pos_edge = self.mlp(h_pos_edge)  # Apply MLP
+
+        # Negative samples: Concatenation of hi || hj || hk
+        h_neg_edge1 = torch.cat([h_src_combined.tile(neg_samples, 1), h_neg_dst1, h_neg_dst2], dim=-1)
+        h_neg_edge2 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst1, h_neg_dst2], dim=-1)
+        h_neg_edge3 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst2, h_neg_dst1], dim=-1)
+
+        # Apply MLP to all negative edges
+        h_neg_edge = torch.cat([self.mlp(h_neg_edge1), self.mlp(h_neg_edge2), self.mlp(h_neg_edge3)], dim=0)
+
+        return h_pos_edge, h_neg_edge
+
+
+        # h_src1 = h[:num_edge]
+        # h_pos_dst1 = h[num_edge:2 * num_edge]
+        # h_neg_dst1 = h[2 * num_edge:3 * num_edge]
+        # h_src2 = h[3 * num_edge:4 * num_edge]
+        # h_pos_dst2 = h[4 * num_edge:5 * num_edge]
+        # h_neg_dst2 = h[5 * num_edge:]
+
+        # h_src_combined = h_src1+h_src2
+
+        # h_pos_edge = torch.cat([h_src_combined, h_pos_dst1, h_pos_dst2], dim=-1)
+        # h_pos_edge = self.src_fc(h_pos_edge)
+        # h_pos_edge = F.relu(h_pos_edge)
+
+        # # Concatenate all negative edges
+        # h_neg_edge1 = torch.cat([h_src_combined.tile(neg_samples, 1), h_neg_dst1, h_neg_dst2], dim=-1)
+        # h_neg_edge2 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst1, h_neg_dst2], dim=-1)
+        # h_neg_edge3 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst2, h_neg_dst1], dim=-1)
+        # h_neg_edge = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
+        # h_neg_edge = self.src_fc(h_neg_edge)
+        # h_neg_edge = F.relu(h_neg_edge)
+
+        # return self.out_fc(h_pos_edge), self.out_fc(h_neg_edge)
+
+
+
         
-        h_pos_edge = torch.nn.functional.relu(h_src_combined + h_pos_dst1 + h_pos_dst2)
-        # Concatenate all negative edges
-        h_neg_edge1 = torch.nn.functional.relu(h_src_combined.tile(neg_samples, 1) + h_neg_dst1 + h_neg_dst2)
-        h_neg_edge2 = torch.nn.functional.relu(h_src_combined.tile(neg_samples, 1) + h_pos_dst1 + h_neg_dst2)
-        h_neg_edge3 = torch.nn.functional.relu(h_src_combined.tile(neg_samples, 1) + h_pos_dst2 + h_neg_dst1)
-        h_neg_edge = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
         
-        return self.out_fc(h_pos_edge), self.out_fc(h_neg_edge)
     
 
 class Dual_Interface(nn.Module):

@@ -234,7 +234,6 @@ def objective(trial, args):
     args.time_dims = args.hidden_dims
     args.batch_size = trial.suggest_int("batch_size", 100, 300, step=50)
     # args.max_edges = trial.suggest_int("max_edges", 50, 500, step=50)
-    args.channel_expansion_factor = trial.suggest_int("channel_expansion_factor", 1, 3)
     args.num_neighbors = trial.suggest_int("num_neighbors", 10, 100, step=10)
     args.optimizer = trial.suggest_categorical("optimizer", ["Adam", "SGD", "RMSprop"])
 

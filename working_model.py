@@ -364,11 +364,9 @@ class EdgePredictor_per_node(nn.Module):
 
     def forward(self, h, neg_samples=1):
         num_edge = h.shape[0] // (2 * neg_samples + 4)
-        print ("h shape", h.shape)
 
         # Extract node embeddings
         h_src1 = h[:num_edge]
-        print ("h_src1 shape", h_src1.shape)
         h_pos_dst1 = h[num_edge:2 * num_edge]
         h_neg_dst1 = h[2 * num_edge:3 * num_edge]
         h_src2 = h[3 * num_edge:4 * num_edge]
@@ -391,6 +389,33 @@ class EdgePredictor_per_node(nn.Module):
         h_neg_edge = torch.cat([self.mlp(h_neg_edge1), self.mlp(h_neg_edge2), self.mlp(h_neg_edge3)], dim=0)
 
         return h_pos_edge, h_neg_edge
+
+
+        # h_src1 = h[:num_edge]
+        # h_pos_dst1 = h[num_edge:2 * num_edge]
+        # h_neg_dst1 = h[2 * num_edge:3 * num_edge]
+        # h_src2 = h[3 * num_edge:4 * num_edge]
+        # h_pos_dst2 = h[4 * num_edge:5 * num_edge]
+        # h_neg_dst2 = h[5 * num_edge:]
+
+        # h_src_combined = h_src1+h_src2
+
+        # h_pos_edge = torch.cat([h_src_combined, h_pos_dst1, h_pos_dst2], dim=-1)
+        # h_pos_edge = self.src_fc(h_pos_edge)
+        # h_pos_edge = F.relu(h_pos_edge)
+
+        # # Concatenate all negative edges
+        # h_neg_edge1 = torch.cat([h_src_combined.tile(neg_samples, 1), h_neg_dst1, h_neg_dst2], dim=-1)
+        # h_neg_edge2 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst1, h_neg_dst2], dim=-1)
+        # h_neg_edge3 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst2, h_neg_dst1], dim=-1)
+        # h_neg_edge = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
+        # h_neg_edge = self.src_fc(h_neg_edge)
+        # h_neg_edge = F.relu(h_neg_edge)
+
+        # return self.out_fc(h_pos_edge), self.out_fc(h_neg_edge)
+
+
+
         
         
     
@@ -436,51 +461,5 @@ class Dual_Interface(nn.Module):
 
         pred_pos, pred_neg = self.edge_predictor(x, neg_samples=neg_samples)
         return pred_pos, pred_neg
-    
-
-class HB_Interface(nn.Module):
-    def __init__(self, mlp_mixer_configs, edge_predictor_configs):
-        super(HB_Interface, self).__init__()
-
-        self.time_feats_dim = edge_predictor_configs['dim_in_time']
-        self.node_feats_dim = edge_predictor_configs['dim_in_node']
-
-        if self.time_feats_dim > 0:
-            self.base_model = Patch_Encoding(**mlp_mixer_configs)
-
-        self.edge_predictor = EdgePredictor_per_node(**edge_predictor_configs)              
-        self.criterion = nn.BCEWithLogitsLoss(reduction='none') 
-        self.reset_parameters()            
-
-    def reset_parameters(self):
-        if self.time_feats_dim > 0:
-            self.base_model.reset_parameters()
-        self.edge_predictor.reset_parameters()
-
-    def forward(self, model_inputs, neg_samples, node_feats):
-        pos_edge_label = model_inputs[-1].view(-1,1)
-        model_inputs = model_inputs[:-1]
-        pred_pos, pred_neg = self.predict(model_inputs, neg_samples, node_feats)
-        
-        all_pred = torch.cat((pred_pos, pred_neg), dim=0)
-        all_edge_label = torch.squeeze(torch.cat((pos_edge_label, torch.zeros_like(pos_edge_label)), dim=0))
-        loss = self.creterion(all_pred, all_edge_label).mean()
-            
-        return loss, all_pred, all_edge_label
-
-    def predict(self, model_inputs, neg_samples, node_feats):
-        if self.time_feats_dim > 0 and self.node_feats_dim == 0:
-            x = self.base_model(*model_inputs)
-        elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
-            x = self.base_model(*model_inputs)
-            x = torch.cat([x, node_feats], dim=1)
-        elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
-            x = node_feats
-        else: 
-            raise ValueError('Either time_feats_dim or node_feats_dim must be larger than 0!')
-
-        pred_pos, pred_neg = self.edge_predictor(x, neg_samples=neg_samples)
-        return pred_pos, pred_neg
-    
     
 

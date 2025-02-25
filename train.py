@@ -36,7 +36,7 @@ def get_args():
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--model', type=str, default='sthn') 
     parser.add_argument('--neg_samples', type=int, default=1)
-    parser.add_argument('--extra_neg_samples', type=int, default=5)
+    parser.add_argument('--extra_neg_samples', type=int, default=1)
     parser.add_argument('--num_neighbors', type=int, default=50)
     parser.add_argument('--channel_expansion_factor', type=int, default=1)
     parser.add_argument('--sampled_num_hops', type=int, default=1)

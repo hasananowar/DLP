@@ -65,8 +65,8 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         
     ###################################################
     # Initialize variables for loss and metrics
-    subgraphs1, elabel1 = subgraphs1
-    subgraphs2, elabel2 = subgraphs2
+    subgraphs1, elabel1, pairlabel1= subgraphs1
+    subgraphs2, elabel2, pairlabel2 = subgraphs2
     loss_lst = []
     MLAUROC.reset()
     MLAUPRC.reset()
@@ -106,9 +106,7 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         edge_feats = torch.cat([edge_feats1, edge_feats2], dim=0)
         print("new edge_feats shape:", edge_feats.shape)
 
-        subgraph_data1.extend(subgraph_data2)
-
-        subgraph_data = subgraph_data1
+        subgraph_data = subgraph_data1 + subgraph_data2
 
         print("new subgraph_data row:", len(subgraph_data))
         print("new subgraph_data col:", len(subgraph_data[0]))
@@ -181,10 +179,13 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
 
 
         # Prepare inputs for the model
+        subgraph_pairlabel = np.stack((pairlabel1[ind], pairlabel2[ind]))
+        print("new pairlabel shape:", subgraph_pairlabel.shape)
         model_inputs = [subgraph_edge_feats.to(args.device),
                         subgraph_edts.to(args.device), 
                         len(has_temporal_neighbors), 
-                        torch.tensor(all_inds).long()]
+                        torch.tensor(all_inds).long(),
+                        torch.from_numpy(subgraph_pairlabel).to(args.device)]
         
         
         start_time = time.time()

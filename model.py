@@ -458,13 +458,22 @@ class HB_Interface(nn.Module):
         self.edge_predictor.reset_parameters()
 
     def forward(self, model_inputs, neg_samples, node_feats):
-        pos_edge_label = model_inputs[-1].view(-1,1)
+        # Extract the last element, which contains the edge labels
+        pos_edge_label = model_inputs[-1]  # Shape: (2, N)
+
+        # Compare row-wise (check if corresponding elements in row 1 and row 2 match)
+        similar_pair = torch.eq(pos_edge_label[0], pos_edge_label[1])  # Shape: (N,)
+        
+        # Convert Boolean tensor to numeric (1 for match, 0 for no match)
+        all_edge_label = torch.where(similar_pair, 
+                                 torch.ones_like(pos_edge_label[0]), 
+                                 torch.zeros_like(pos_edge_label[0]))  # Shape: (N,)
+
         model_inputs = model_inputs[:-1]
         pred_pos, pred_neg = self.predict(model_inputs, neg_samples, node_feats)
         
         all_pred = torch.cat((pred_pos, pred_neg), dim=0)
-        all_edge_label = torch.squeeze(torch.cat((pos_edge_label, torch.zeros_like(pos_edge_label)), dim=0))
-        loss = self.creterion(all_pred, all_edge_label).mean()
+        loss = self.criterion(all_pred, all_edge_label).mean()
             
         return loss, all_pred, all_edge_label
 

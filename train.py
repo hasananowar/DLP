@@ -34,7 +34,7 @@ def get_args():
     # model
     parser.add_argument('--window_size', type=int, default=5)
     parser.add_argument('--dropout', type=float, default=0.1)
-    parser.add_argument('--model', type=str, default='sthn') 
+    parser.add_argument('--model', type=str, default='DLP') 
     parser.add_argument('--neg_samples', type=int, default=1)
     parser.add_argument('--extra_neg_samples', type=int, default=1)
     parser.add_argument('--num_neighbors', type=int, default=50)
@@ -50,6 +50,7 @@ def get_args():
     parser.add_argument('--ignore_edge_feats', action='store_true')
     parser.add_argument('--use_onehot_node_feats', action='store_true')
     parser.add_argument('--use_type_feats', action='store_true')
+    parser.add_argument('--use_pair_index', action='store_true')
 
     parser.add_argument('--use_graph_structure', action='store_true')
     parser.add_argument('--structure_time_gap', type=int, default=2000)
@@ -141,24 +142,49 @@ def load_all_data(args):
     
     if args.use_type_feats:
 
-
         edge_type1 = df1.label.values
         args.num_edgeType1 = len(set(edge_type1.tolist()))
-        edge_feats1 = torch.nn.functional.one_hot(torch.from_numpy(edge_type1-1), 
+        type_feats1 = torch.nn.functional.one_hot(torch.from_numpy(edge_type1-1), 
                                                  num_classes=args.num_edgeType1)
-        edge_feat1_dims = edge_feats1.size(1)
+        type_feats1_dims = type_feats1.size(1)
 
         edge_type2 = df2.label.values
         args.num_edgeType2 = len(set(edge_type2.tolist()))
-        edge_feats2 = torch.nn.functional.one_hot(torch.from_numpy(edge_type2-1), 
+        type_feats2 = torch.nn.functional.one_hot(torch.from_numpy(edge_type2-1), 
                                                  num_classes=args.num_edgeType2)
-        edge_feat2_dims = edge_feats2.size(1)
+        type_feats2_dims = type_feats2.size(1)
+
+        print('type1 feature dim %d, type2 feature dim %d' % (type_feats1_dims, type_feats2_dims))
+
+
+    if args.use_pair_index:
+
+        pair_index1 = df1.nh_id.values
+        args.num_pair_index1 = len(set(pair_index1.tolist()))
+        pair_feats1 = torch.nn.functional.one_hot(torch.from_numpy(pair_index1-1), 
+                                                 num_classes=args.num_pair_index1)
+        pair_feats1_dims =  pair_feats1.size(1)
+
+        pair_index2 = df2.nh_id.values
+        args.num_pair_index2 = len(set(pair_index2.tolist()))
+        pair_feats2 = torch.nn.functional.one_hot(torch.from_numpy(pair_index2-1), 
+                                                 num_classes=args.num_pair_index2)
+        pair_feats2_dims = pair_feats2.size(1)
+
+        print('pair1 feature dim %d, pair2 feature dim %d' % (pair_feats1_dims, pair_feats2_dims))
+
+        edge_feats1 = torch.cat([pair_feats1 , type_feats1], dim=1)
+        edge_feats2 = torch.cat([pair_feats2 , type_feats2], dim=1)
+
+        edge_feat1_dims =  edge_feats1.size(1)
+        edge_feat2_dims =  edge_feats2.size(1)
     
     print('Node feature dim %d, Edges1 feature dim %d, Edges2 feature dim %d' % (node_feat_dims, edge_feat1_dims, edge_feat2_dims))
     
-    # Data leakage check (assuming it should be applied to both datasets)
+    # Data leakage check 
     if args.check_data_leakage:
         check_data_leakage(args, g1, df1)
+        check_data_leakage(args, g2, df2)
     
     args.node_feat_dims = node_feat_dims
     args.edge_feat_dims = edge_feat1_dims
@@ -182,11 +208,11 @@ def load_model_dual(args):
         'predict_class': 1 if not args.predict_class else args.num_edgeType + 1,
     }
 
-    if args.model == 'sthn':
+    if args.model == 'DLP':
         if args.predict_class:
-            from model import Multiclass_Dual_Interface as STHN_Interface
+            from model import Multiclass_Dual_Interface as DLP_Interface
         else:
-            from model import Dual_Interface as STHN_Interface
+            from model import Dual_Interface as DLP_Interface
         from link_pred_train_utils import link_pred_train_dual
 
         mixer_configs = {
@@ -204,7 +230,7 @@ def load_model_dual(args):
     else:
         NotImplementedError
     
-    model = STHN_Interface(mixer_configs, edge_predictor_configs)
+    model = DLP_Interface(mixer_configs, edge_predictor_configs)
     for k, v in model.named_parameters():
         print(k, v.requires_grad)
 
@@ -222,6 +248,7 @@ if __name__ == "__main__":
     args.use_graph_structure = True
     args.ignore_node_feats = True  # We only use graph structure
     args.use_type_feats = True     # Type encoding
+    args.use_pair_index = True     # Pair encoding
     args.use_cached_subgraph = True
 
     print(args)

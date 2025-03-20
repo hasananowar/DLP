@@ -40,7 +40,6 @@ Thumbs.db
 # IDE specific
 .vscode/
 .idea/
+*.sh
 new_*
 old_*
-
-train_optuna.py

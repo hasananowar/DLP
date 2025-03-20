@@ -40,6 +40,7 @@ def get_args():
     parser.add_argument('--num_neighbors', type=int, default=50)
     parser.add_argument('--channel_expansion_factor', type=int, default=1)
     parser.add_argument('--sampled_num_hops', type=int, default=1)
+    parser.add_argument('--pair_dims', type=int, default=100)
     parser.add_argument('--time_dims', type=int, default=100)
     parser.add_argument('--hidden_dims', type=int, default=100)
     parser.add_argument('--num_layers', type=int, default=1)
@@ -158,17 +159,16 @@ def load_all_data(args):
 
 
     if args.use_pair_index:
+        num_pair_index = df1.nh_id.max() + 1  
+        pair_embedding_layer = torch.nn.Embedding(num_pair_index, args.pair_dims)
 
-        pair_index1 = df1.nh_id.values
-        args.num_pair_index1 = len(set(pair_index1.tolist()))
-        pair_feats1 = torch.nn.functional.one_hot(torch.from_numpy(pair_index1-1), 
-                                                 num_classes=args.num_pair_index1)
-        pair_feats1_dims =  pair_feats1.size(1)
+        pair_index1 = torch.tensor(df1.nh_id.values, dtype=torch.long)
+        pair_index2 = torch.tensor(df2.nh_id.values, dtype=torch.long)
 
-        pair_index2 = df2.nh_id.values
-        args.num_pair_index2 = len(set(pair_index2.tolist()))
-        pair_feats2 = torch.nn.functional.one_hot(torch.from_numpy(pair_index2-1), 
-                                                 num_classes=args.num_pair_index2)
+        pair_feats1 = pair_embedding_layer(pair_index1)
+        pair_feats2 = pair_embedding_layer(pair_index2)
+
+        pair_feats1_dims = pair_feats1.size(1)
         pair_feats2_dims = pair_feats2.size(1)
 
         print('pair1 feature dim %d, pair2 feature dim %d' % (pair_feats1_dims, pair_feats2_dims))
@@ -179,7 +179,7 @@ def load_all_data(args):
         edge_feat1_dims =  edge_feats1.size(1)
         edge_feat2_dims =  edge_feats2.size(1)
     
-    print('Node feature dim %d, Edges1 feature dim %d, Edges2 feature dim %d' % (node_feat_dims, edge_feat1_dims, edge_feat2_dims))
+        print('Node feature dim %d, Edges1 feature dim %d, Edges2 feature dim %d' % (node_feat_dims, edge_feat1_dims, edge_feat2_dims))
     
     # Data leakage check 
     if args.check_data_leakage:
@@ -187,7 +187,7 @@ def load_all_data(args):
         check_data_leakage(args, g2, df2)
     
     args.node_feat_dims = node_feat_dims
-    args.edge_feat_dims = edge_feat1_dims
+    args.edge_feat_dims = max(edge_feat1_dims, edge_feat2_dims)
     
     # Move features to device
     if node_feats is not None:
@@ -213,7 +213,7 @@ def load_model_dual(args):
             from model import Multiclass_Dual_Interface as DLP_Interface
         else:
             from model import Dual_Interface as DLP_Interface
-        from DLP.link_pred_train_utils import link_pred_train_dual
+        from link_pred_train_utils import link_pred_train_dual
 
         mixer_configs = {
             'per_graph_size'  : args.max_edges,

@@ -42,4 +42,5 @@ Thumbs.db
 .idea/
 new_*
 old_*
+
 train_optuna.py

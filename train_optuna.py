@@ -199,7 +199,7 @@ def load_model_dual(args):
             from model import Multiclass_Dual_Interface as STHN_Interface
         else:
             from model import Dual_Interface as STHN_Interface
-        from link_pred_train_utils import link_pred_train_dual
+        from SLP_copy.new_link_pred_train_utils import link_pred_train_dual
 
         mixer_configs = {
             'per_graph_size'  : args.max_edges,

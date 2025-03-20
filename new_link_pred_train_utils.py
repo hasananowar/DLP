@@ -60,18 +60,19 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     # Ensure both loaders have the same number of batches
     assert len(train_loader1) == len(train_loader2), "Mismatch in number of batches between subgraphs1 and subgraphs2"
     
-    pbar = tqdm(total=len(train_loader1))
-    pbar.set_description('%s mode with negative samples1 %d ...'%(mode, neg_samples1))
+    # pbar = tqdm(total=len(train_loader1))
+    # pbar.set_description('%s mode with negative samples1 %d ...'%(mode, neg_samples1))
         
     ###################################################
     # Initialize variables for loss and metrics
-    subgraphs1, elabel1 = subgraphs1
-    subgraphs2, elabel2 = subgraphs2
+    subgraphs1, elabel1, pairlabel1= subgraphs1
+    subgraphs2, elabel2, pairlabel2 = subgraphs2
     loss_lst = []
     MLAUROC.reset()
     MLAUPRC.reset()
-    scaler1 = MinMaxScaler()
-    scaler2= MinMaxScaler()
+    scaler = MinMaxScaler()
+
+    print("train_loader1 shape:", len(train_loader1))
     
     for ind in range(len(train_loader1)):
         ###################################################
@@ -95,21 +96,30 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             
             subgraph_data1 = [subgraph_data_list1[i] for i in mini_batch_inds1]
             subgraph_data2 = [subgraph_data_list2[i] for i in mini_batch_inds2]
+
+
+        print("subgraph_data1 shape:", len(subgraph_data1[0]))
+        print("subgraph_data2 shape:", len(subgraph_data2[0]))
+        print("edge_feats1 shape:", edge_feats1.shape)
+        print("edge_feats2 shape:", edge_feats2.shape)
+
+        edge_feats = torch.cat([edge_feats1, edge_feats2], dim=0)
+        print("new edge_feats shape:", edge_feats.shape)
+
+        subgraph_data = subgraph_data1 + subgraph_data2
+
+        print("new subgraph_data row:", len(subgraph_data))
+        print("new subgraph_data col:", len(subgraph_data[0]))
         
         # Construct mini-batch giant graphs for both subgraphs
-        subgraph_data1 = construct_mini_batch_giant_graph(subgraph_data1, args.max_edges)
-        subgraph_data2 = construct_mini_batch_giant_graph(subgraph_data2, args.max_edges)
-        
-        
+        subgraph_data = construct_mini_batch_giant_graph(subgraph_data, args.max_edges)
+
+
         ###################################################
         # Raw edge feats 
-        subgraph_edge_feats1 = edge_feats1[subgraph_data1['eid']]
-        subgraph_edts1 = torch.from_numpy(subgraph_data1['edts']).float()
+        subgraph_edge_feats = edge_feats[subgraph_data['eid']]
+        subgraph_edts = torch.from_numpy(subgraph_data['edts']).float()
 
-        
-        subgraph_edge_feats2 = edge_feats2[subgraph_data2['eid']]
-        subgraph_edts2 = torch.from_numpy(subgraph_data2['edts']).float()
-        
         ###################################################
         # Handle node features if required
         if args.use_graph_structure and node_feats:
@@ -126,98 +136,56 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         
         ###################################################
         # Scale edge timestamps
-        scaler1.fit(subgraph_edts1.reshape(-1,1))
-        subgraph_edts1 = scaler1.transform(subgraph_edts1.reshape(-1,1)).ravel().astype(np.float32) * 1000
-        subgraph_edts1 = torch.from_numpy(subgraph_edts1)
+        scaler.fit(subgraph_edts.reshape(-1,1))
+        subgraph_edts = scaler.transform(subgraph_edts.reshape(-1,1)).ravel().astype(np.float32) * 1000
+        subgraph_edts = torch.from_numpy(subgraph_edts)
         
-        scaler2.fit(subgraph_edts2.reshape(-1,1))
-        subgraph_edts2 = scaler2.transform(subgraph_edts2.reshape(-1,1)).ravel().astype(np.float32) * 1000
-        subgraph_edts2 = torch.from_numpy(subgraph_edts2)
-
-
-
-        # # Ensure subgraph_edts1 and subgraph_edts2 are properly handled
-        # subgraph_edts1 = np.array(subgraph_edts1) if not isinstance(subgraph_edts1, np.ndarray) else subgraph_edts1
-        # subgraph_edts2 = np.array(subgraph_edts2) if not isinstance(subgraph_edts2, np.ndarray) else subgraph_edts2
-
-        # # Handle subgraph_edts1
-        # if subgraph_edts1.size > 0:  # Ensure size attribute works correctly
-        #     scaler1.fit(subgraph_edts1.reshape(-1, 1))  # Fit the scaler
-        #     subgraph_edts1 = scaler1.transform(subgraph_edts1.reshape(-1, 1)).ravel().astype(np.float32) * 1000
-        #     subgraph_edts1 = torch.from_numpy(subgraph_edts1)  # Convert to torch tensor
-        # else:
-        #     print("Warning: subgraph_edts1 is empty. Creating an empty tensor.")
-        #     subgraph_edts1 = torch.tensor([], dtype=torch.float32)
-
-        # # Handle subgraph_edts2
-        # if subgraph_edts2.size > 0:  # Ensure size attribute works correctly
-        #     scaler2.fit(subgraph_edts2.reshape(-1, 1))  # Fit the scaler
-        #     subgraph_edts2 = scaler2.transform(subgraph_edts2.reshape(-1, 1)).ravel().astype(np.float32) * 1000
-        #     subgraph_edts2 = torch.from_numpy(subgraph_edts2)  # Convert to torch tensor
-        # else:
-        #     print("Warning: subgraph_edts2 is empty. Creating an empty tensor.")
-        #     subgraph_edts2 = torch.tensor([], dtype=torch.float32)
-
-
 
         ###################################################
         # Compute inds1 and inds2 based on all_edge_indptr
-        all_inds1 = []
-        has_temporal_neighbors1 = []
-        all_edge_indptr1 = subgraph_data1['all_edge_indptr']
-        for i in range(len(all_edge_indptr1) -1):
-            num_edges1 = all_edge_indptr1[i+1] - all_edge_indptr1[i]
-            all_inds1.extend([args.max_edges * i + j for j in range(num_edges1)])
-            has_temporal_neighbors1.append(num_edges1 > 0)
+        all_inds = []
+        has_temporal_neighbors = []
+        all_edge_indptr = subgraph_data['all_edge_indptr']
+        for i in range(len(all_edge_indptr) -1):
+            num_edges = all_edge_indptr[i+1] - all_edge_indptr[i]
+            all_inds.extend([args.max_edges * i + j for j in range(num_edges)])
+            has_temporal_neighbors.append(num_edges > 0)
 
-        all_inds2 = []
-        has_temporal_neighbors2 = []
-        all_edge_indptr2 = subgraph_data2['all_edge_indptr']
-        for i in range(len(all_edge_indptr2) -1):
-            num_edges2 = all_edge_indptr2[i+1] - all_edge_indptr2[i]
-            all_inds2.extend([args.max_edges * i + j for j in range(num_edges2)])
-            has_temporal_neighbors2.append(num_edges2 > 0)
+        # all_inds2 = []
+        # has_temporal_neighbors2 = []
+        # all_edge_indptr2 = subgraph_data2['all_edge_indptr']
+        # for i in range(len(all_edge_indptr2) -1):
+        #     num_edges2 = all_edge_indptr2[i+1] - all_edge_indptr2[i]
+        #     all_inds2.extend([args.max_edges * i + j for j in range(num_edges2)])
+        #     has_temporal_neighbors2.append(num_edges2 > 0)
 
 
-        ###################################################
-        #         # Prepare inputs for the model
-        # model_inputs1 = [
-        #     subgraph_edge_feats1.to(args.device),    # [number_of_edges, edge_dims]
-        #     subgraph_edts1.to(args.device),          # [number_of_edges]
-        #     len(has_temporal_neighbors1), # list of booleans
-        #     torch.tensor(all_inds1).long()                    # [number_of_edges]
-        # ]
+        # merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)  # [num_edges1 + num_edges2, edge_dims]
+
+        # merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0)  # [num_edges1 + num_edges2, 1]
+
+        # merged_batch_size = len(has_temporal_neighbors1) + len(has_temporal_neighbors2)  # integer
+
         
-        # model_inputs2 = [
-        #     subgraph_edge_feats2.to(args.device),    # [number_of_edges, edge_dims]
-        #     subgraph_edts2.to(args.device),          # [number_of_edges]
-        #     len(has_temporal_neighbors2), # list of booleans
-        #     torch.tensor(all_inds2).long()                    # [number_of_edges]
-        # ]
-        
-        # # Forward pass through the model
-        # loss, preds1, edge_labels1= model(
-        #     model_inputs1, 
-        #     model_inputs2, 
-        #     neg_samples=max(neg_samples1, neg_samples2),  # Ensure consistency
-        #     node_feats=subgraph_node_feats1  # Assuming node_feats1 and node_feats2 are similar
-        # )
-        
-        ###################################################
 
-        merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)  # [num_edges1 + num_edges2, edge_dims]
+        print("subgraph_edge_feats shape:", subgraph_edge_feats.shape)
 
-        merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0)  # [num_edges1 + num_edges2, 1]
+        print("subgraph_edts shape:", subgraph_edts.shape)
 
-        merged_batch_size = len(has_temporal_neighbors1) + len(has_temporal_neighbors2)  # integer
+
+        print("all_inds:", len(all_inds))
+
+        print("has_temporal_neighbors:", len(has_temporal_neighbors))
+
 
         # Prepare inputs for the model
-        model_inputs = [
-            merged_edge_feats.to(args.device),   
-            merged_edge_ts.to(args.device),     
-            merged_batch_size, 
-            torch.tensor(all_inds1 + all_inds2).long()
-        ]
+        subgraph_pairlabel = np.stack((pairlabel1[ind], pairlabel2[ind]))
+        print("new pairlabel shape:", subgraph_pairlabel.shape)
+        model_inputs = [subgraph_edge_feats.to(args.device),
+                        subgraph_edts.to(args.device), 
+                        len(has_temporal_neighbors), 
+                        torch.tensor(all_inds).long(),
+                        torch.from_numpy(subgraph_pairlabel).to(args.device)]
         
         
         start_time = time.time()
@@ -245,9 +213,9 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         # Accumulate loss
         loss_lst.append(float(loss))
 
-        pbar.update(1)
+    #     pbar.update(1)
 
-    pbar.close()    
+    # pbar.close()    
     
     # Compute final metrics
     total_auroc = MLAUROC.compute()

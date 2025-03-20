@@ -43,3 +43,4 @@ Thumbs.db
 *.sh
 new_*
 old_*
+DATA/FILT_HB/HB1000frames.csv

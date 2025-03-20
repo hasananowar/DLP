@@ -42,7 +42,7 @@ class TimeEncode(nn.Module):
 ################################################################################################
 ################################################################################################
 """
-Module: SLP
+Module: DLP
 """
 
 class FeedForward(nn.Module):
@@ -336,12 +336,12 @@ class Patch_Encoding(nn.Module):
 ################################################################################################
 
 """
-Edge predictor
+Dual Edge predictor
 """
 
 class EdgePredictor_per_node(nn.Module):
     """
-    Predicts links using a 2-layer MLP on hi || hj || hk.
+    Predicts dual links using a 2-layer MLP on hi || hj || hk.
     """
     def __init__(self, dim_in_time, dim_in_node, predict_class):
         super().__init__()
@@ -349,7 +349,7 @@ class EdgePredictor_per_node(nn.Module):
         self.dim_in_time = dim_in_time
         self.dim_in_node = dim_in_node
 
-        # 2-layer MLP on hi || hj || hk
+        # 2-layer MLP on hu || hv || hw
         self.mlp = nn.Sequential(
             nn.Linear(3 * (dim_in_time + dim_in_node), 100),
             nn.ReLU(),
@@ -375,10 +375,10 @@ class EdgePredictor_per_node(nn.Module):
         h_pos_dst2 = h[4 * num_edge:5 * num_edge]
         h_neg_dst2 = h[5 * num_edge:]
 
-        # Compute combined source embedding (hi)
+        # Compute combined source embedding (hu)
         h_src_combined = h_src1 + h_src2
 
-        # Concatenate hi || hj || hk before passing to MLP
+        # Concatenate hu || hv || hw before passing to MLP
         h_pos_edge = torch.cat([h_src_combined, h_pos_dst1, h_pos_dst2], dim=-1)
         h_pos_edge = self.mlp(h_pos_edge)  # Apply MLP
 
@@ -438,58 +438,6 @@ class Dual_Interface(nn.Module):
         return pred_pos, pred_neg
     
 
-class HB_Interface(nn.Module):
-    def __init__(self, mlp_mixer_configs, edge_predictor_configs):
-        super(HB_Interface, self).__init__()
-
-        self.time_feats_dim = edge_predictor_configs['dim_in_time']
-        self.node_feats_dim = edge_predictor_configs['dim_in_node']
-
-        if self.time_feats_dim > 0:
-            self.base_model = Patch_Encoding(**mlp_mixer_configs)
-
-        self.edge_predictor = EdgePredictor_per_node(**edge_predictor_configs)              
-        self.criterion = nn.BCEWithLogitsLoss(reduction='none') 
-        self.reset_parameters()            
-
-    def reset_parameters(self):
-        if self.time_feats_dim > 0:
-            self.base_model.reset_parameters()
-        self.edge_predictor.reset_parameters()
-
-    def forward(self, model_inputs, neg_samples, node_feats):
-        # Extract the last element, which contains the edge labels
-        pos_edge_label = model_inputs[-1]  # Shape: (2, N)
-
-        # Compare row-wise (check if corresponding elements in row 1 and row 2 match)
-        similar_pair = torch.eq(pos_edge_label[0], pos_edge_label[1])  # Shape: (N,)
-        
-        # Convert Boolean tensor to numeric (1 for match, 0 for no match)
-        all_edge_label = torch.where(similar_pair, 
-                                 torch.ones_like(pos_edge_label[0]), 
-                                 torch.zeros_like(pos_edge_label[0]))  # Shape: (N,)
-
-        model_inputs = model_inputs[:-1]
-        pred_pos, pred_neg = self.predict(model_inputs, neg_samples, node_feats)
-        
-        all_pred = torch.cat((pred_pos, pred_neg), dim=0)
-        loss = self.criterion(all_pred, all_edge_label).mean()
-            
-        return loss, all_pred, all_edge_label
-
-    def predict(self, model_inputs, neg_samples, node_feats):
-        if self.time_feats_dim > 0 and self.node_feats_dim == 0:
-            x = self.base_model(*model_inputs)
-        elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
-            x = self.base_model(*model_inputs)
-            x = torch.cat([x, node_feats], dim=1)
-        elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
-            x = node_feats
-        else: 
-            raise ValueError('Either time_feats_dim or node_feats_dim must be larger than 0!')
-
-        pred_pos, pred_neg = self.edge_predictor(x, neg_samples=neg_samples)
-        return pred_pos, pred_neg
     
     
 

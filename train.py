@@ -209,11 +209,9 @@ def load_model_dual(args):
     }
 
     if args.model == 'DLP':
-        if args.predict_class:
-            from model import Multiclass_Dual_Interface as DLP_Interface
-        else:
-            from model import Dual_Interface as DLP_Interface
-        from link_pred_train_utils import link_pred_train_dual
+
+        from model import Dual_Interface as DLP_Interface
+        from dual_link_pred_train_utils import link_pred_train_dual
 
         mixer_configs = {
             'per_graph_size'  : args.max_edges,

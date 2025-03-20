@@ -135,31 +135,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         subgraph_edts2 = torch.from_numpy(subgraph_edts2)
 
 
-
-        # # Ensure subgraph_edts1 and subgraph_edts2 are properly handled
-        # subgraph_edts1 = np.array(subgraph_edts1) if not isinstance(subgraph_edts1, np.ndarray) else subgraph_edts1
-        # subgraph_edts2 = np.array(subgraph_edts2) if not isinstance(subgraph_edts2, np.ndarray) else subgraph_edts2
-
-        # # Handle subgraph_edts1
-        # if subgraph_edts1.size > 0:  # Ensure size attribute works correctly
-        #     scaler1.fit(subgraph_edts1.reshape(-1, 1))  # Fit the scaler
-        #     subgraph_edts1 = scaler1.transform(subgraph_edts1.reshape(-1, 1)).ravel().astype(np.float32) * 1000
-        #     subgraph_edts1 = torch.from_numpy(subgraph_edts1)  # Convert to torch tensor
-        # else:
-        #     print("Warning: subgraph_edts1 is empty. Creating an empty tensor.")
-        #     subgraph_edts1 = torch.tensor([], dtype=torch.float32)
-
-        # # Handle subgraph_edts2
-        # if subgraph_edts2.size > 0:  # Ensure size attribute works correctly
-        #     scaler2.fit(subgraph_edts2.reshape(-1, 1))  # Fit the scaler
-        #     subgraph_edts2 = scaler2.transform(subgraph_edts2.reshape(-1, 1)).ravel().astype(np.float32) * 1000
-        #     subgraph_edts2 = torch.from_numpy(subgraph_edts2)  # Convert to torch tensor
-        # else:
-        #     print("Warning: subgraph_edts2 is empty. Creating an empty tensor.")
-        #     subgraph_edts2 = torch.tensor([], dtype=torch.float32)
-
-
-
         ###################################################
         # Compute inds1 and inds2 based on all_edge_indptr
         all_inds1 = []
@@ -179,11 +154,11 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             has_temporal_neighbors2.append(num_edges2 > 0)
             
 
-        merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)  # [num_edges1 + num_edges2, edge_dims]
+        merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)  # [num_edges1 + num_edges2]
 
-        merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0)  # [num_edges1 + num_edges2, 1]
+        merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0)  # [num_edges1 + num_edges2]
 
-        merged_batch_size = len(has_temporal_neighbors1) + len(has_temporal_neighbors2)  # integer
+        merged_batch_size = len(has_temporal_neighbors1) + len(has_temporal_neighbors2)
 
         # Prepare inputs for the model
         model_inputs = [
@@ -192,7 +167,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             merged_batch_size, 
             torch.tensor(all_inds1 + all_inds2).long()
         ]
-        
         
         start_time = time.time()
         
@@ -203,12 +177,10 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             node_feats=subgraph_node_feats1  # Assuming node_feats1 and node_feats2 are similar
         )
 
-        
         if mode == 'train' and optimizer is not None:
             optimizer.zero_grad()
-            loss.backward()
+            loss.backward(retain_graph=True)
             optimizer.step()
-        
         time_epoch += (time.time() - start_time)
         
         ###################################################
@@ -220,15 +192,12 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         loss_lst.append(float(loss))
 
         pbar.update(1)
-
     pbar.close()    
     
     # Compute final metrics
     total_auroc = MLAUROC.compute()
     total_auprc = MLAUPRC.compute()
-    
     print('%s mode with time %.4f, AUROC1 %.4f, AUPRC1 %.4f, loss %.4f'%(mode, time_epoch, total_auroc, total_auprc, loss.item()))
-    
     return_loss = np.mean(loss_lst)
     return total_auroc, total_auprc, return_loss, time_epoch
 
@@ -236,14 +205,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
 def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):
     """
     Train the model for dual link prediction tasks.
-    
-    Args:
-        model: The neural network model.
-        args: Configuration arguments.
-        g: Tuple of graphs (g1, g2).
-        df: Tuple of DataFrames (df1, df2).
-        node_feats: Node features tensor.
-        edge_feats: Edge features tensor.
     
     Returns:
         best_auc_model: The best-performing model based on validation loss.

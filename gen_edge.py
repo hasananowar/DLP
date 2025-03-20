@@ -98,7 +98,7 @@ def map_numeric_indices(dist_df, angle_df):
 ####################################################
 
 # DataFrame with X, Y, Z coordinates
-filepath = "DATA/FILT_HB/HB1000frames.csv"
+filepath = "DATA/FILT_HB/HB100frames.csv"
 data = pd.read_csv(filepath)
 
 # Keep the first X Timeframe

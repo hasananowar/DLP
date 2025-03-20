@@ -1,7 +1,7 @@
 ## Dual Link Prediction
 
 
-### How to run the code
+### How to use
 
 #### Generate edge from 3D coordinates of atoms
 
@@ -54,6 +54,16 @@ The following libraries and frameworks are required to run the code. Make sure t
 - **pandas**: Data manipulation and analysis library.
 - **numpy**: Library for numerical computations.
 - **scipy**: Library for scientific computing.
+
+
+### Datasets
+
+Presently, we only provide a small sample of the dataset used. Since the data was obtained from our collaborators working on Molecular Dynamics Simulation from other Universities - please send us a formal request via email and we will promptly respond and provide it.
+
+## Contact
+
+If you have any questions, feel free to contact us.
+Emails: `mhanowar@iastate.edu` or `gocet25@iastate.edu`
 
 
 

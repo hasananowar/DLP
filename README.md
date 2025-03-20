@@ -6,18 +6,18 @@
 
 Prepare data for DLP by formating the data.
 
-### Generate graph structure from 3D coordinates
+## Generate graph structure from 3D coordinates
 
 
 
-### How to start
+### How to run the code
 
-### 1. Compile C++ smapler (from [tgl](https://github.com/amazon-research/tgl))
+## 1. Compile C++ sampler 
 
 ```shell
 python setup.py build_ext --inplace
 ```
-### 2. Data pre-process
+## 2. Data pre-process
 
 ```shell
 python gen_graph.py --data FILT_HB/edges1.csv

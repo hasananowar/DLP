@@ -99,10 +99,7 @@ def map_numeric_indices(dist_df, angle_df):
 
 # DataFrame with X, Y, Z coordinates
 filepath = "DATA/FILT_HB/HB100frames.csv"
-data = pd.read_csv(filepath)
-
-# Keep the first X Timeframe
-df = data.loc[data['Timeframe'] < 255100].copy()
+df = pd.read_csv(filepath)
 df.rename(columns={"Timeframe": "time"}, inplace=True)
 df['time'] -= 255000
 df['node'] = df.apply(lambda row: f"{row['Atom_Name']}_{row['Residue_ID']}", axis=1)

@@ -28,6 +28,7 @@ __pycache__/
 venv/
 ENV/
 env/
+EXTRA_DATA/
 .venv/
 env.bak/
 venv.bak/

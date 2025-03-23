@@ -11,7 +11,9 @@ logs/
 *.parquet
 *.pickle
 
+
 # Jupyter Notebook
+*.ipynb
 .ipynb_checkpoints/
 
 # Python cache

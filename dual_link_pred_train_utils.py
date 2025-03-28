@@ -2,18 +2,19 @@ from tqdm import tqdm
 import torch
 import time
 import copy
+import json
 import numpy as np
 from torch_sparse import SparseTensor
 from data_process_utils import pre_compute_subgraphs, get_random_inds, get_subgraph_sampler
 from construct_subgraph import construct_mini_batch_giant_graph, print_subgraph_data
 from utils import row_norm
-from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision
-from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision
+from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision, MulticlassF1Score
+from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision, BinaryF1Score
 from sklearn.preprocessing import MinMaxScaler
 
 
 def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
-             MLAUROC, MLAUPRC, mode):
+             MLAUROC, MLAUPRC, MLF1, mode):
     """
     Executes a training or evaluation epoch for dual link prediction tasks.
     """
@@ -70,6 +71,7 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     loss_lst = []
     MLAUROC.reset()
     MLAUPRC.reset()
+    MLF1.reset()
     scaler1 = MinMaxScaler()
     scaler2= MinMaxScaler()
     
@@ -187,6 +189,7 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         # Directly pass logits to metrics; they will apply sigmoid internally
         MLAUROC.update(preds, edge_labels)
         MLAUPRC.update(preds, edge_labels)
+        MLF1.update(preds, edge_labels)
         
         # Accumulate loss
         loss_lst.append(float(loss))
@@ -197,9 +200,19 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     # Compute final metrics
     total_auroc = MLAUROC.compute()
     total_auprc = MLAUPRC.compute()
-    print('%s mode with time %.4f, AUROC1 %.4f, AUPRC1 %.4f, loss %.4f'%(mode, time_epoch, total_auroc, total_auprc, loss.item()))
-    return_loss = np.mean(loss_lst)
-    return total_auroc, total_auprc, return_loss, time_epoch
+    total_f1 = MLF1.compute()
+
+        # Convert metric values to Python floats if they are tensors.
+    if torch.is_tensor(total_auroc):
+        total_auroc = total_auroc.item()
+    if torch.is_tensor(total_auprc):
+        total_auprc = total_auprc.item()
+    if torch.is_tensor(total_f1):
+        total_f1 = total_f1.item()
+    
+    print('%s mode with time %.4f, AUROC %.4f, AUPRC %.4f, F1 %.4f, loss %.4f'
+          % (mode, time_epoch, total_auroc, total_auprc, total_f1, loss.item()))
+    return total_auroc, total_auprc, total_f1, np.mean(loss_lst), time_epoch
 
 
 def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):
@@ -229,12 +242,15 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     ###################################################
     # Initialize metrics
     all_results = {
-        'train_ap1': [],
-        'valid_ap1': [],
-        'test_ap1' : [],
-        'train_auc1': [],
-        'valid_auc1': [],
-        'test_auc1' : [],
+        'train_ap': [],
+        'valid_ap': [],
+        'test_ap' : [],
+        'train_auc': [],
+        'valid_auc': [],
+        'test_auc' : [],
+        'train_f1': [],
+        'valid_f1': [],
+        'test_f1' : [],
         'train_loss': [],
         'valid_loss': [],
         'test_loss': [],
@@ -246,24 +262,25 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     
     if args.predict_class:
         num_classes = args.num_edgeType + 1
-        # Metrics for dst1
-        train_AUROC1 = MulticlassAUROC(num_classes, average="macro", thresholds=None)
-        valid_AUROC1 = MulticlassAUROC(num_classes, average="macro", thresholds=None)
-        test_AUROC1 = MulticlassAUROC(num_classes, average="macro", thresholds=None)
-        
-        train_AUPRC1 = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
-        valid_AUPRC1 = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
-        test_AUPRC1 = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
-      
+        train_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None).to(args.device)
+        valid_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None).to(args.device)
+        test_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None).to(args.device)
+        train_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None).to(args.device)
+        valid_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None).to(args.device)
+        test_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None).to(args.device)
+        train_F1 = MulticlassF1Score(num_classes, average="macro").to(args.device)
+        valid_F1 = MulticlassF1Score(num_classes, average="macro").to(args.device)
+        test_F1 = MulticlassF1Score(num_classes, average="macro").to(args.device)
     else:
-        # Binary metrics for dst1
-        train_AUROC1 = BinaryAUROC(thresholds=None)
-        valid_AUROC1 = BinaryAUROC(thresholds=None)
-        test_AUROC1 = BinaryAUROC(thresholds=None)
-        
-        train_AUPRC1 = BinaryAveragePrecision(thresholds=None)
-        valid_AUPRC1 = BinaryAveragePrecision(thresholds=None)
-        test_AUPRC1 = BinaryAveragePrecision(thresholds=None)
+        train_AUROC = BinaryAUROC(thresholds=None).to(args.device)
+        valid_AUROC = BinaryAUROC(thresholds=None).to(args.device)
+        test_AUROC = BinaryAUROC(thresholds=None).to(args.device)
+        train_AUPRC = BinaryAveragePrecision(thresholds=None).to(args.device)
+        valid_AUPRC = BinaryAveragePrecision(thresholds=None).to(args.device)
+        test_AUPRC = BinaryAveragePrecision(thresholds=None).to(args.device)
+        train_F1 = BinaryF1Score().to(args.device)
+        valid_F1 = BinaryF1Score().to(args.device)
+        test_F1 = BinaryF1Score().to(args.device)
         
     
     ###################################################
@@ -272,56 +289,75 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         print(f'>>> Epoch {epoch + 1}')
         
         # Train
-        train_auc1, train_ap1, train_loss, time_train = run_dual(
-            model, optimizer, args, train_subgraphs1, train_subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2,
-            train_AUROC1, train_AUPRC1, mode='train'
-        )
+        train_auc, train_ap, train_f1, train_loss, time_train = run_dual(
+            model, optimizer, args, train_subgraphs1, train_subgraphs2,
+            df1,df2,node_feats, edge_feats1, edge_feats2,
+            train_AUROC, train_AUPRC, train_F1, mode='train')
         
         # Validate
+
         with torch.no_grad():
-            valid_auc1, valid_ap1, valid_loss, time_valid = run_dual(
-                model, None, args, valid_subgraphs1, valid_subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
-                valid_AUROC1, valid_AUPRC1,  mode='valid'
-            )
+            valid_auc, valid_ap, valid_f1, valid_loss, time_valid = run_dual(
+                copy.deepcopy(model), None, args, valid_subgraphs1, valid_subgraphs2,
+                df1, df2, node_feats, edge_feats1, edge_feats2,
+                valid_AUROC, valid_AUPRC, valid_F1, mode='valid')
             
-            # Test
-            test_auc1, test_ap1, test_loss, time_test = run_dual(
-                model, None, args, test_subgraphs1, test_subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
-                test_AUROC1, test_AUPRC1, mode='test'
-            )
+            test_auc, test_ap, test_f1, test_loss, time_test = run_dual(
+                copy.deepcopy(model), None, args, test_subgraphs1, test_subgraphs2,
+                df1, df2, node_feats, edge_feats1, edge_feats2,
+                test_AUROC, test_AUPRC, test_F1, mode='test')
         
         # Check for improvement
         if valid_loss < low_loss:
             best_auc_model = copy.deepcopy(model).cpu()
             low_loss = valid_loss
             best_epoch = epoch
-            best_test_auc = test_auc1
-            best_test_ap = test_ap1  
-        
-        # Early stopping
-        if epoch > best_epoch + args.early_stop_patience:
-            print("Early stopping triggered.")
+            best_test_auc, best_test_ap, best_test_f1 = test_auc, test_ap, test_f1
+            
+        user_train_total_time += time_train + time_valid
+        user_epoch_num += 1
+        if epoch > best_epoch + 20:
             break
         
-        # Aggregate metrics
-        all_results['train_ap1'].append(train_ap1)
-        all_results['valid_ap1'].append(valid_ap1)
-        all_results['test_ap1'].append(test_ap1)
-
-        all_results['train_auc1'].append(train_auc1)
-        all_results['valid_auc1'].append(valid_auc1)
-        all_results['test_auc1'].append(test_auc1)
+        all_results['train_ap'].append(train_ap)
+        all_results['valid_ap'].append(valid_ap)
+        all_results['test_ap'].append(test_ap)
+        
+        all_results['valid_auc'].append(valid_auc)
+        all_results['train_auc'].append(train_auc)
+        all_results['test_auc'].append(test_auc)
+        
+        all_results['train_f1'].append(train_f1)
+        all_results['valid_f1'].append(valid_f1)
+        all_results['test_f1'].append(test_f1)
         
         all_results['train_loss'].append(train_loss)
         all_results['valid_loss'].append(valid_loss)
         all_results['test_loss'].append(test_loss)
         
-        print(f"Train: AUROC1 {train_auc1:.4f}, AUPRC1 {train_ap1:.4f}, Loss {train_loss:.4f}")
-        print(f"Valid: AUROC1 {valid_auc1:.4f}, AUPRC1 {valid_ap1:.4f},  Loss {valid_loss:.4f}")
-        print(f"Test: AUROC1 {test_auc1:.4f}, AUPRC1 {test_ap1:.4f},  Loss {test_loss:.4f}")
+        print(f"Train: AUROC1 {train_auc:.4f}, AUPRC {train_ap:.4f}, F1 {train_f1:.4f}, Loss {train_loss:.4f}")
+        print(f"Valid: AUROC1 {valid_auc:.4f}, AUPRC {valid_ap:.4f}, F1 {valid_f1:.4f}, Loss {valid_loss:.4f}")
+        print(f"Test: AUROC1 {test_auc:.4f}, AUPRC {test_ap:.4f}, F1 {test_f1:.4f}, Loss {test_loss:.4f}")
     
-    print(f'Best Epoch: {best_epoch}, Best Test AUROC: {best_test_auc:.4f}, Best Test AUPRC: {best_test_ap:.4f}, Best Valid Loss: {low_loss:.4f}')
-    return best_auc_model, low_loss
+    print(f'Best Epoch: {best_epoch}, Best Test AUROC: {best_test_auc:.4f}, Best Test AUPRC: {best_test_ap:.4f}, Best Test F1: {best_test_f1:.4f}, Best Valid Loss: {low_loss:.4f}')
+        # Save the detailed results dictionary to a JSON file
+    with open("results.json", "w") as f:
+        json.dump(all_results, f)
+    print("Results saved to results.json")
+    
+    # Save the best metrics and epoch information
+    best_results = {
+        'best_epoch': best_epoch,
+        'low_loss': low_loss,
+        'best_test_auc': best_test_auc,
+        'best_test_ap': best_test_ap,
+        'best_test_f1': best_test_f1
+    }
+    with open("best_results.json", "w") as f:
+        json.dump(best_results, f)
+    print("Best results saved to best_results.json")
+    
+    return best_auc_model
 
 
 def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args):

@@ -129,12 +129,13 @@ def pre_compute_subgraphs(args, g, df, mode, input_data):
 
             # time-stamp for node = edge time-stamp
             ts = np.tile(rows.time.values, extra_neg_samples + 2).astype(np.float32)
-            all_elabel.append(rows.label.values)
+            # all_elabel.append(rows.label.values)
             all_subgraphs.append(get_mini_batch(sampler, root_nodes, ts, args.sampled_num_hops))
             
             pbar.update(1)
         pbar.close()
-        subgraph_elabel = (all_subgraphs, all_elabel)
+        # subgraph_elabel = (all_subgraphs, all_elabel)
+        subgraph_elabel = all_subgraphs
         try:
             pickle.dump(subgraph_elabel, open(fn, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
         except:
@@ -150,7 +151,7 @@ def get_random_inds(num_subgraph, cached_neg_samples, neg_samples):
     batch_size = num_subgraph // (2+cached_neg_samples)
     pos_src_inds = np.arange(batch_size)
     pos_dst_inds = np.arange(batch_size) + batch_size
-    neg_dst_inds = np.random.randint(low=2, high=2+cached_neg_samples, size=batch_size*neg_samples)
+    neg_dst_inds = np.random.randint(low=2, high=2+cached_neg_samples, size=int(batch_size*neg_samples))
     neg_dst_inds = batch_size * neg_dst_inds + np.arange(batch_size)
     mini_batch_inds = np.concatenate([pos_src_inds, pos_dst_inds, neg_dst_inds]).astype(np.int32)
     ###################################################

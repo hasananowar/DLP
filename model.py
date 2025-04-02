@@ -382,13 +382,29 @@ class EdgePredictor_per_node(nn.Module):
         h_pos_edge = torch.cat([h_src_combined, h_pos_dst1, h_pos_dst2], dim=-1)
         h_pos_edge = self.mlp(h_pos_edge)  # Apply MLP
 
-        # Negative samples: Concatenation of hi || hj || hk
+        # Negative samples: Concatenation of hu || hv || hw
         h_neg_edge1 = torch.cat([h_src_combined.tile(neg_samples, 1), h_neg_dst1, h_neg_dst2], dim=-1)
         h_neg_edge2 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst1, h_neg_dst2], dim=-1)
         h_neg_edge3 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst2, h_neg_dst1], dim=-1)
 
-        # Apply MLP to all negative edges
-        h_neg_edge = torch.cat([self.mlp(h_neg_edge1), self.mlp(h_neg_edge2), self.mlp(h_neg_edge3)], dim=0)
+            # Apply MLP to negative edges
+        h_neg_edge1 = self.mlp(h_neg_edge1)
+        h_neg_edge2 = self.mlp(h_neg_edge2)
+        h_neg_edge3 = self.mlp(h_neg_edge3)
+
+        # h_neg_edge = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
+
+            # Concatenate all negative edge predictions
+        h_neg_edge_all = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
+        
+        # Balance the positives and negatives:
+        num_pos = h_pos_edge.size(0)
+        if h_neg_edge_all.size(0) > num_pos:
+            # Randomly select a subset of negatives equal in number to positives
+            perm = torch.randperm(h_neg_edge_all.size(0))
+            h_neg_edge = h_neg_edge_all[perm][:num_pos]
+        else:
+            h_neg_edge = h_neg_edge_all
 
         return h_pos_edge, h_neg_edge
         
@@ -414,8 +430,8 @@ class Dual_Interface(nn.Module):
             self.base_model.reset_parameters()
         self.edge_predictor.reset_parameters()
 
-    def forward(self, model_inputs, neg_samples, node_feats):        
-        pred_pos, pred_neg = self.predict(model_inputs, neg_samples, node_feats)
+    def forward(self, model_inputs, neg_samples, node_feats1, node_feats2):        
+        pred_pos, pred_neg = self.predict(model_inputs, neg_samples, node_feats1, node_feats2)
         all_pred = torch.cat((pred_pos, pred_neg), dim=0)
         all_edge_label = torch.cat((torch.ones_like(pred_pos), 
                                      torch.zeros_like(pred_neg)), dim=0)
@@ -423,14 +439,14 @@ class Dual_Interface(nn.Module):
 
         return loss, all_pred, all_edge_label
 
-    def predict(self, model_inputs, neg_samples, node_feats):
+    def predict(self, model_inputs, neg_samples, node_feats1, node_feats2):
         if self.time_feats_dim > 0 and self.node_feats_dim == 0:
             x = self.base_model(*model_inputs)
         elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
             x = self.base_model(*model_inputs)
-            x = torch.cat([x, node_feats], dim=1)
+            x = torch.cat([x, node_feats1, node_feats2], dim=1)
         elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
-            x = node_feats
+            x = node_feats1
         else: 
             raise ValueError('Either time_feats_dim or node_feats_dim must be larger than 0!')
 

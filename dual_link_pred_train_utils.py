@@ -13,7 +13,7 @@ from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision, Bin
 from sklearn.preprocessing import MinMaxScaler
 
 
-def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats, edge_feats1, edge_feats2, 
+def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats1, node_feats2, edge_feats1, edge_feats2, 
              MLAUROC, MLAUPRC, MLF1, mode):
     """
     Executes a training or evaluation epoch for dual link prediction tasks.
@@ -66,8 +66,8 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         
     ###################################################
     # Initialize variables for loss and metrics
-    subgraphs1, elabel1 = subgraphs1
-    subgraphs2, elabel2 = subgraphs2
+    # subgraphs1, elabel1 = subgraphs1
+    # subgraphs2, elabel2 = subgraphs2
     loss_lst = []
     MLAUROC.reset()
     MLAUPRC.reset()
@@ -114,13 +114,13 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         
         ###################################################
         # Handle node features if required
-        if args.use_graph_structure and node_feats:
+        if args.use_graph_structure and node_feats1 is not None:
             num_of_df_links1 = len(subgraph_data_list1) //  (cached_neg_samples1 + 2)   
-            subgraph_node_feats1 = compute_sign_feats(node_feats, df1, cur_inds1, num_of_df_links1, subgraph_data1['root_nodes'], args)
+            subgraph_node_feats1 = compute_sign_feats(node_feats1, df1, cur_inds1, num_of_df_links1, subgraph_data1['root_nodes'], args, num_nodes = args.num_nodes1)
             cur_inds1 += num_of_df_links1
             
             num_of_df_links2 = len(subgraph_data_list2) //  (cached_neg_samples2 + 2)   
-            subgraph_node_feats2 = compute_sign_feats(node_feats, df2, cur_inds2, num_of_df_links2, subgraph_data2['root_nodes'], args)
+            subgraph_node_feats2 = compute_sign_feats(node_feats2, df2, cur_inds2, num_of_df_links2, subgraph_data2['root_nodes'], args, num_nodes = args.num_nodes2)
             cur_inds2 += num_of_df_links2
         else:
             subgraph_node_feats1 = None
@@ -176,7 +176,8 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         loss, preds, edge_labels= model(
             model_inputs, 
             neg_samples=max(neg_samples1, neg_samples2),  # Ensure consistency
-            node_feats=subgraph_node_feats1  # Assuming node_feats1 and node_feats2 are similar
+            node_feats1=subgraph_node_feats1,
+            node_feats2=subgraph_node_feats2    
         )
 
         if mode == 'train' and optimizer is not None:
@@ -215,7 +216,7 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     return total_auroc, total_auprc, total_f1, np.mean(loss_lst), time_epoch
 
 
-def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):
+def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats1, node_feats2,  edge_feats1, edge_feats2):
     """
     Train the model for dual link prediction tasks.
     
@@ -257,6 +258,8 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     }
     
     low_loss = 100000
+    user_train_total_time = 0
+    user_epoch_num = 0
     best_epoch = -1
     best_test_auc, best_test_ap = 0, 0
     
@@ -291,7 +294,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         # Train
         train_auc, train_ap, train_f1, train_loss, time_train = run_dual(
             model, optimizer, args, train_subgraphs1, train_subgraphs2,
-            df1,df2,node_feats, edge_feats1, edge_feats2,
+            df1,df2,node_feats1, node_feats2, edge_feats1, edge_feats2,
             train_AUROC, train_AUPRC, train_F1, mode='train')
         
         # Validate
@@ -299,12 +302,12 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         with torch.no_grad():
             valid_auc, valid_ap, valid_f1, valid_loss, time_valid = run_dual(
                 copy.deepcopy(model), None, args, valid_subgraphs1, valid_subgraphs2,
-                df1, df2, node_feats, edge_feats1, edge_feats2,
+                df1, df2, node_feats1, node_feats2, edge_feats1, edge_feats2,
                 valid_AUROC, valid_AUPRC, valid_F1, mode='valid')
             
             test_auc, test_ap, test_f1, test_loss, time_test = run_dual(
                 copy.deepcopy(model), None, args, test_subgraphs1, test_subgraphs2,
-                df1, df2, node_feats, edge_feats1, edge_feats2,
+                df1, df2, node_feats1, node_feats2, edge_feats1, edge_feats2,
                 test_AUROC, test_AUPRC, test_F1, mode='test')
         
         # Check for improvement
@@ -316,7 +319,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
             
         user_train_total_time += time_train + time_valid
         user_epoch_num += 1
-        if epoch > best_epoch + 20:
+        if epoch > best_epoch + 30:
             break
         
         all_results['train_ap'].append(train_ap)
@@ -340,10 +343,6 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         print(f"Test: AUROC1 {test_auc:.4f}, AUPRC {test_ap:.4f}, F1 {test_f1:.4f}, Loss {test_loss:.4f}")
     
     print(f'Best Epoch: {best_epoch}, Best Test AUROC: {best_test_auc:.4f}, Best Test AUPRC: {best_test_ap:.4f}, Best Test F1: {best_test_f1:.4f}, Best Valid Loss: {low_loss:.4f}')
-        # Save the detailed results dictionary to a JSON file
-    with open("results.json", "w") as f:
-        json.dump(all_results, f)
-    print("Results saved to results.json")
     
     # Save the best metrics and epoch information
     best_results = {
@@ -353,16 +352,16 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'best_test_ap': best_test_ap,
         'best_test_f1': best_test_f1
     }
-    with open("best_results.json", "w") as f:
+    with open("DATA/FILT_HB/pair_best_results.json", "w") as f:
         json.dump(best_results, f)
     print("Best results saved to best_results.json")
     
     return best_auc_model
 
 
-def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args):
+def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args, num_nodes):
     num_duplicate = len(root_nodes) // num_links 
-    num_nodes = args.num_nodes
+    # num_nodes = args.num_nodes
 
     root_inds = torch.arange(len(root_nodes)).view(num_duplicate, -1)
     root_inds = [arr.flatten() for arr in root_inds.chunk(1, dim=1)]

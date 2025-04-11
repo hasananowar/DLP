@@ -394,7 +394,7 @@ class EdgePredictor_per_node(nn.Module):
 
         # h_neg_edge = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
 
-            # Concatenate all negative edge predictions
+        # Concatenate all negative edge predictions
         h_neg_edge_all = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
         
         # Balance the positives and negatives:

@@ -345,16 +345,17 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats1, node_feats2
     print(f'Best Epoch: {best_epoch}, Best Test AUROC: {best_test_auc:.4f}, Best Test AUPRC: {best_test_ap:.4f}, Best Test F1: {best_test_f1:.4f}, Best Valid Loss: {low_loss:.4f}')
     
     # Save the best metrics and epoch information
-    best_results = {
+    results = {
+        'Total epochs': user_epoch_num,
         'best_epoch': best_epoch,
-        'low_loss': low_loss,
         'best_test_auc': best_test_auc,
         'best_test_ap': best_test_ap,
-        'best_test_f1': best_test_f1
+        'best_test_f1': best_test_f1,
+        'lowest loss': low_loss,
+        'Total train time': user_train_total_time
     }
-    with open("DATA/FILT_HB/pair_best_results.json", "w") as f:
-        json.dump(best_results, f)
-    print("Best results saved to best_results.json")
+    with open(f"results/nodefeatuse_{args.use_onehot_node_feats}_results.json", "w") as f:
+        json.dump(results, f)
     
     return best_auc_model
 

@@ -70,17 +70,17 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 def load_feat(d):
-    node_feats1 = None
-    if os.path.exists('DATA/{}/node_features1.pt'.format(d)):
-        node_feats1 = torch.load('DATA/{}/node_features1.pt'.format(d))
-        if node_feats1.dtype == torch.bool:
-            node_feats1 = node_feats1.type(torch.float32)
+    node_feats = None
+    if os.path.exists('DATA/{}/node_features.pt'.format(d)):
+        node_feats = torch.load('DATA/{}/node_features.pt'.format(d))
+        if node_feats.dtype == torch.bool:
+            node_feats = node_feats.type(torch.float32)
 
-    node_feats2 = None
-    if os.path.exists('DATA/{}/node_features2.pt'.format(d)):
-        node_feats2 = torch.load('DATA/{}/node_features2.pt'.format(d))
-        if node_feats2.dtype == torch.bool:
-            node_feats2 = node_feats2.type(torch.float32)
+    # node_feats2 = None
+    # if os.path.exists('DATA/{}/node_features2.pt'.format(d)):
+    #     node_feats2 = torch.load('DATA/{}/node_features2.pt'.format(d))
+    #     if node_feats2.dtype == torch.bool:
+    #         node_feats2 = node_feats2.type(torch.float32)
         
 
     edge_feats1 = None
@@ -89,7 +89,7 @@ def load_feat(d):
         edge_feats = torch.load('DATA/{}/edge_features.pt'.format(d))
         if edge_feats.dtype == torch.bool:
             edge_feats = edge_feats.type(torch.float32)
-    return node_feats1, node_feats2, edge_feats1, edge_feats2   
+    return node_feats, edge_feats1, edge_feats2   
 
 def load_graph(d):
     """
@@ -118,6 +118,16 @@ def load_all_data(args):
     # Determine split indices based on one of the datasets (assuming they are aligned)
     args.train_edge_end = df1[df1['ext_roll'].gt(0)].index[0]
     args.val_edge_end   = df1[df1['ext_roll'].gt(1)].index[0]
+
+    # src_num_nodes1 = int(df1['src'].max()) - int(df1['src'].min()) + 1
+    # dst_num_nodes1 = int(df1['dst'].max()) - int(df1['dst'].min()) + 1
+
+    # src_num_nodes2 = int(df2['src'].max()) - int(df2['src'].min()) + 1
+    # dst_num_nodes2 = int(df2['dst'].max()) - int(df2['dst'].min()) + 1
+
+    # args.num_nodes1 = src_num_nodes1 + dst_num_nodes1
+    # args.num_nodes2 = src_num_nodes2 + dst_num_nodes2
+
     args.num_nodes1 = max(int(df1['src'].max()), int(df1['dst'].max())) + 1
     args.num_nodes2 = max(int(df2['src'].max()), int(df2['dst'].max())) + 1
     args.num_edges = len(df1) # the number of edges are same for both datasets
@@ -127,12 +137,12 @@ def load_all_data(args):
                                          len(df1)-args.val_edge_end))
     print('Num nodes for data1 %d, Num nodes for data2 %d, num edges %d' % (args.num_nodes1, args.num_nodes2, args.num_edges))
     
-    # Load features (assuming node features are same for both datasets)
-    node_feats1, node_feats2, edge_feats1, edge_feats2  = load_feat(args.data)  # Modify as needed
+    # Load features 
+    node_feats, edge_feats1, edge_feats2  = load_feat(args.data)  # Modify as needed
     
     # Feature pre-processing
-    node_feat1_dims = 0 if node_feats1 is None else node_feats1.shape[1]
-    node_feat2_dims = 0 if node_feats2 is None else node_feats2.shape[1]
+    node_feat_dims = 0 if node_feats is None else node_feats.shape[1]
+    # node_feat2_dims = 0 if node_feats2 is None else node_feats2.shape[1]
     edge_feat1_dims = 0 if edge_feats1 is None else edge_feats1.shape[1]
     edge_feat2_dims = 0 if edge_feats2 is None else edge_feats2.shape[1]
     
@@ -143,22 +153,25 @@ def load_all_data(args):
         # node_feats2 = torch.eye(args.num_nodes2)
         # node_feat2_dims = node_feats2.size(1)
 
-        num_classes = int(node_feats1.max().item())+1  # Determine the number of unique classes
-        node_feats1 = torch.nn.functional.one_hot(node_feats1.to(torch.int64).squeeze(), num_classes=num_classes)
-        node_feats1 = node_feats1.to(torch.float32)
-        node_feat1_dims = node_feats1.size(1)
 
-        num_classes = int(node_feats2.max().item())+1  # Determine the number of unique classes
-        node_feats2 = torch.nn.functional.one_hot(node_feats2.to(torch.int64).squeeze(), num_classes=num_classes)
-        node_feats2 = node_feats2.to(torch.float32)
-        node_feat2_dims = node_feats2.size(1)
+        num_classes = int(node_feats.max().item())+1  # Determine the number of unique classes
+        node_feats = torch.nn.functional.one_hot(node_feats.to(torch.int64).squeeze(), num_classes=num_classes)
+        node_feats = node_feats.to(torch.float32)
+        node_feat_dims = node_feats.size(1)
+
+        # num_classes2 = int(node_feats2.max().item())+1  # Determine the number of unique classes
+        # node_feats2 = torch.nn.functional.one_hot(node_feats2.to(torch.int64).squeeze(), num_classes=num_classes2)
+        # node_feats2 = node_feats2.to(torch.float32)
+        # node_feat2_dims = node_feats2.size(1)
+
+        print('One-hot node feature dim =', (node_feats.shape))
     
     if args.ignore_node_feats:
         print('>>> Ignore node features')
-        node_feats1 = None
-        node_feat1_dims = 0
-        node_feats2 = None
-        node_feat2_dims = 0
+        node_feats = None
+        node_feat_dims = 0
+        # node_feats2 = None
+        # node_feat2_dims = 0
 
     if args.use_pair_index:
         # Create an embedding layer for pair indices using df1.dst_idx.
@@ -230,20 +243,20 @@ def load_all_data(args):
         check_data_leakage(args, g1, df1)
         check_data_leakage(args, g2, df2)
     
-    args.node_feat_dims = max(node_feat1_dims, node_feat2_dims)
+    args.node_feat_dims = node_feat_dims
     args.edge_feat_dims = max(edge_feat1_dims, edge_feat2_dims)
     
     # Move features to device
-    if node_feats1 is not None:
-        node_feats1 = node_feats1.to(args.device)
-    if node_feats2 is not None:
-        node_feats2 = node_feats2.to(args.device)
+    if node_feats is not None:
+        node_feats = node_feats.to(args.device)
+    # if node_feats2 is not None:
+    #     node_feats2 = node_feats2.to(args.device)
     if edge_feats1 is not None:
         edge_feats1 = edge_feats1.to(args.device)
     if edge_feats2 is not None:
         edge_feats2 = edge_feats2.to(args.device)
     
-    return node_feats1, node_feats2, edge_feats1, edge_feats2, g1, g2, df1, df2, args
+    return node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args
 
 
 def load_model_dual(args):
@@ -291,7 +304,8 @@ if __name__ == "__main__":
 
     # Set specific arguments related to graph structure and feature usage
     args.use_graph_structure = True
-    args.ignore_node_feats = True  # We only use graph structure
+    # args.ignore_node_feats = True  # We only use graph structure
+    args.use_onehot_node_feats = True # Use node features
     # args.use_type_feats = True     # Type encoding
     args.use_pair_index = True     # Pair encoding
     args.use_cached_subgraph = True
@@ -307,7 +321,7 @@ if __name__ == "__main__":
 
     ###################################################
     # Load features and graphs
-    node_feats1, node_feats2, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
+    node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
         
     ###################################################
     # Load model
@@ -316,4 +330,4 @@ if __name__ == "__main__":
     ###################################################
     # Link prediction training
     print('Train dual link prediction task from scratch ...')
-    model = link_pred_train_dual(model.to(args.device), args, g1, g2, df1, df2, node_feats1, node_feats2, edge_feats1, edge_feats2)
+    model = link_pred_train_dual(model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2)

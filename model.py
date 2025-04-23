@@ -430,8 +430,8 @@ class Dual_Interface(nn.Module):
             self.base_model.reset_parameters()
         self.edge_predictor.reset_parameters()
 
-    def forward(self, model_inputs, neg_samples, node_feats1, node_feats2):        
-        pred_pos, pred_neg = self.predict(model_inputs, neg_samples, node_feats1, node_feats2)
+    def forward(self, model_inputs, neg_samples,node_feats):        
+        pred_pos, pred_neg = self.predict(model_inputs, neg_samples, node_feats)
         all_pred = torch.cat((pred_pos, pred_neg), dim=0)
         all_edge_label = torch.cat((torch.ones_like(pred_pos), 
                                      torch.zeros_like(pred_neg)), dim=0)
@@ -439,14 +439,14 @@ class Dual_Interface(nn.Module):
 
         return loss, all_pred, all_edge_label
 
-    def predict(self, model_inputs, neg_samples, node_feats1, node_feats2):
+    def predict(self, model_inputs, neg_samples, node_feats):
         if self.time_feats_dim > 0 and self.node_feats_dim == 0:
             x = self.base_model(*model_inputs)
         elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
             x = self.base_model(*model_inputs)
-            x = torch.cat([x, node_feats1, node_feats2], dim=1)
+            x = torch.cat([x, node_feats], dim=1)
         elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
-            x = node_feats1
+            x = node_feats
         else: 
             raise ValueError('Either time_feats_dim or node_feats_dim must be larger than 0!')
 

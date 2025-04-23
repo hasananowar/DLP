@@ -24,7 +24,12 @@ npz_output_path = os.path.join('DATA', os.path.dirname(args.data), npz_filename)
 csv_path = os.path.join('DATA', args.data)
 df = pd.read_csv(csv_path)
 
-num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1 
+# num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1 
+
+# src_num_nodes = int(df['src'].max()) - int(df['src'].min()) + 1
+# dst_num_nodes = int(df['dst'].max()) - int(df['dst'].min()) + 1
+# num_nodes = src_num_nodes + dst_num_nodes
+num_nodes = int(max(df['src'].max(), df['dst'].max())) + 1
 print('num_nodes: ', num_nodes)
 
 ext_full_indptr = np.zeros(num_nodes + 1, dtype=np.int32)
@@ -53,7 +58,7 @@ ext_full_ts = np.array(list(itertools.chain(*ext_full_ts)))
 ext_full_eid = np.array(list(itertools.chain(*ext_full_eid)))
 
 print('Sorting...')
-
+# sort each neighbor list by timestamp
 def tsort(i, indptr, indices, t, eid):
     beg = indptr[i]
     end = indptr[i + 1]

@@ -11,7 +11,22 @@ from utils import row_norm
 from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision, MulticlassF1Score
 from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision, BinaryF1Score
 from sklearn.preprocessing import MinMaxScaler
-import pandas as pd
+
+
+# F1: need thresholded predictions
+def prepare_preds_for_metric(metric, preds):
+    """
+    Prepare predictions for a given metric:
+    - For F1Score (binary or multiclass): apply threshold or argmax
+    - For AUROC and AUPRC: raw logits are fine
+    """
+    if isinstance(metric, (BinaryF1Score, MulticlassF1Score)):
+        if preds.ndim == 1:  # Binary case: preds are logits
+            preds = (torch.sigmoid(preds) > 0.5).long()
+        else:  # Multiclass case: preds are logits
+            preds = torch.argmax(preds, dim=1)
+    return preds
+
 
 def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats , edge_feats1, edge_feats2, 
              MLAUROC, MLAUPRC, MLF1, mode):
@@ -88,7 +103,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             subgraph_data2 = subgraphs2.mini_batch(ind, mini_batch_inds2)
             
         else: # valid + test
-            print('using cached subgraph')
             subgraph_data_list1 = subgraphs1[ind]
             subgraph_data_list2 = subgraphs2[ind]
             
@@ -105,11 +119,19 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         
         ###################################################
         # Raw edge feats 
-        subgraph_edge_feats1 = edge_feats1[subgraph_data1['eid']]
-        subgraph_edts1 = torch.from_numpy(subgraph_data1['edts']).float()
+        if edge_feats1 is not None:
+            subgraph_edge_feats1 = edge_feats1[subgraph_data1['eid']]
+        else:
+            subgraph_edge_feats1 = None
 
+        if edge_feats2 is not None:
+            subgraph_edge_feats2 = edge_feats2[subgraph_data2['eid']]
+        else:
+            subgraph_edge_feats2 = None
+        ###################################################
+        # Edge timestamps
         
-        subgraph_edge_feats2 = edge_feats2[subgraph_data2['eid']]
+        subgraph_edts1 = torch.from_numpy(subgraph_data1['edts']).float()
         subgraph_edts2 = torch.from_numpy(subgraph_data2['edts']).float()
         
         ###################################################
@@ -176,7 +198,7 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         start_time = time.time()
         
         # Forward pass through the model
-        loss, preds, edge_labels= model(
+        loss, pred, edge_label= model(
             model_inputs, 
             neg_samples=max(neg_samples1, neg_samples2),  # Ensure consistency
             node_feats=merged_node_feats  
@@ -189,10 +211,14 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         time_epoch += (time.time() - start_time)
         
         ###################################################
-        # Directly pass logits to metrics; they will apply sigmoid internally
-        MLAUROC.update(preds, edge_labels)
-        MLAUPRC.update(preds, edge_labels)
-        MLF1.update(preds, edge_labels)
+        # AUROC and AUPRC: raw logits are fine; they will apply sigmoid internally
+        MLAUROC.update(pred, edge_label)
+        MLAUPRC.update(pred, edge_label)
+
+        # Automatically prepare predictions for F1
+        prepared_preds = prepare_preds_for_metric(MLF1, pred)
+        MLF1.update(prepared_preds, edge_label)
+
         
         # Accumulate loss
         loss_lst.append(float(loss))
@@ -356,94 +382,12 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'lowest loss': low_loss,
         'Total train time': user_train_total_time
     }
-    with open(f"results/nodefeatuse_{args.use_onehot_node_feats}_results.json", "w") as f:
-        json.dump(results, f)
+    # with open(f"results/nodefeatuse_{args.use_onehot_node_feats}_results.json", "w") as f:
+    #     json.dump(results, f)
     
     return best_auc_model
 
 
-# def compute_sign_feats(
-#     node_feats: torch.Tensor,
-#     df: pd.DataFrame,
-#     start_i: int,
-#     num_links: int,
-#     root_nodes: torch.Tensor,
-#     args,
-#     num_nodes: int
-# ) -> torch.Tensor:
-#     """
-#     node_feats: [N, F] feature for each node in the full graph
-#     df:       the edge‐list DataFrame (used to build adjacencies)
-#     start_i:  index in df where this subgraph block begins
-#     num_links: number of subgraphs in this batch
-#     root_nodes: LongTensor of length B = num_links * num_duplicate, each in [0..num_nodes-1]
-#     args.structure_hops, args.structure_time_gap, etc.
-#     """
-#     device = args.device
-#     # move root_nodes to the right device once and for all
-#     root_nodes = root_nodes.to(device).long()
-#     node_feats  = node_feats.to(device)
-
-#     # how many times each subgraph is duplicated
-#     num_duplicate = len(root_nodes) // num_links
-#     assert num_duplicate * num_links == len(root_nodes), \
-#         f"len(root_nodes) ({len(root_nodes)}) not divisible by num_links ({num_links})"
-
-#     # build index‐groups: each chunk is a slice of positions in root_nodes
-#     # e.g. chunk0 = [0,1,...,num_duplicate-1], chunk1 = [num_duplicate,...,2*num_duplicate-1], ...
-#     root_pos_chunks = [
-#         torch.arange(i * num_duplicate, (i+1) * num_duplicate, device=device, dtype=torch.long)
-#         for i in range(num_links)
-#     ]
-
-#     # we'll fill one row per root_node
-#     B, F = len(root_nodes), node_feats.size(1)
-#     output_feats = torch.zeros((B, F), device=device)
-
-#     i = start_i
-#     for chunk_idx, pos_idx in enumerate(root_pos_chunks):
-#         # for all these root positions we need to recompute sign_feats
-#         if i == 0 or args.structure_hops == 0:
-#             sign_feats = node_feats.clone()
-#         else:
-#             prev_i = max(0, i - args.structure_time_gap)
-#             cur_df = df[prev_i:i]
-#             src = torch.from_numpy(cur_df.src.values).to(device)
-#             dst = torch.from_numpy(cur_df.dst.values).to(device)
-
-#             # build undirected edge_index
-#             edge_index = torch.cat([torch.stack([src,dst]), torch.stack([dst,src])], dim=1)
-#             edge_index, edge_cnt = torch.unique(edge_index, dim=1, return_counts=True)
-#             mask = edge_index[0] != edge_index[1]   # drop self-loops
-
-#             adj = SparseTensor(
-#                 value = torch.ones_like(edge_cnt[mask], dtype=torch.float32),
-#                 row   = edge_index[0][mask],
-#                 col   = edge_index[1][mask],
-#                 sparse_sizes=(num_nodes, num_nodes)
-#             ).to(device)
-
-#             adj_norm = row_norm(adj)  # already on device
-#             # power‐sum up to structure_hops
-#             feats_list = [node_feats]
-#             for _ in range(args.structure_hops):
-#                 feats_list.append(adj_norm @ feats_list[-1])
-#             sign_feats = torch.stack(feats_list, dim=0).sum(dim=0)  # [N, F]
-
-#         # now index out only the features we need
-#         # the parts of root_nodes corresponding to this chunk:
-#         this_roots = root_nodes[pos_idx]  # shape [num_duplicate]
-#         # guard to ensure all indices < N
-#         assert torch.max(this_roots) < node_feats.size(0), \
-#             f"Index out of bounds: max root {int(this_roots.max())} >= N={node_feats.size(0)}"
-
-#         # pull sign_feats at those node‐indices, then scatter into output_feats
-#         output_feats[pos_idx] = sign_feats[this_roots]
-
-#         # advance i by how many df‐rows we consumed per chunk
-#         i += num_duplicate
-
-#     return output_feats
 
 def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args, num_nodes):
     num_duplicate = len(root_nodes) // num_links 

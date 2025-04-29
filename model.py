@@ -368,7 +368,6 @@ class EdgePredictor_per_node(nn.Module):
 
         # Extract node embeddings
         h_src1 = h[:num_edge]
-        print ("h_src1 shape", h_src1.shape)
         h_pos_dst1 = h[num_edge:2 * num_edge]
         h_neg_dst1 = h[2 * num_edge:3 * num_edge]
         h_src2 = h[3 * num_edge:4 * num_edge]
@@ -392,18 +391,48 @@ class EdgePredictor_per_node(nn.Module):
         h_neg_edge2 = self.mlp(h_neg_edge2)
         h_neg_edge3 = self.mlp(h_neg_edge3)
 
-        # h_neg_edge = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
-
         # Concatenate all negative edge predictions
         h_neg_edge_all = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
         
-        # Balance the positives and negatives:
+        # positives and negatives Class Balance
+        
+
+        
         num_pos = h_pos_edge.size(0)
-        if h_neg_edge_all.size(0) > num_pos:
-            # Randomly select a subset of negatives equal in number to positives
-            perm = torch.randperm(h_neg_edge_all.size(0))
-            h_neg_edge = h_neg_edge_all[perm][:num_pos]
+        num_neg = h_neg_edge_all.size(0)
+
+        # Undersampling
+        # if num_neg > num_pos:
+        #     # Randomly select a subset of negatives equal in number to positives
+        #     perm = torch.randperm(num_neg)
+        #     h_neg_edge = h_neg_edge_all[perm][:num_pos]
+        # else:
+        #     h_neg_edge = h_neg_edge_all
+
+        # return h_pos_edge, h_neg_edge
+    
+
+        # Oversampling
+        if num_pos < num_neg:
+            # too few positives → duplicate some positives
+            extra_idx = torch.randint(
+                0, num_pos, (num_neg - num_pos,),
+                device=h_pos_edge.device
+            )
+            h_pos_edge = torch.cat([h_pos_edge, h_pos_edge[extra_idx]], dim=0)
+            h_neg_edge = h_neg_edge_all
+
+        elif num_neg < num_pos:
+            # too few negatives → duplicate some negatives
+            extra_idx = torch.randint(
+                0, num_neg, (num_pos - num_neg,),
+                device=h_neg_edge_all.device
+            )
+            h_neg_edge = torch.cat([h_neg_edge_all, h_neg_edge_all[extra_idx]], dim=0)
+            h_pos_edge = h_pos_edge
+
         else:
+            # already balanced
             h_neg_edge = h_neg_edge_all
 
         return h_pos_edge, h_neg_edge

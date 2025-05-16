@@ -9,23 +9,23 @@ from data_process_utils import pre_compute_subgraphs, get_random_inds, get_subgr
 from construct_subgraph import construct_mini_batch_giant_graph, print_subgraph_data
 from utils import row_norm
 from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision, MulticlassF1Score
+from sklearn.metrics import f1_score
+import logging
+import math
+from pathlib import Path
+# Set up logging with proper format
+logging.basicConfig(level=logging.INFO, 
+                    format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Example logging usage
+logging.info("This is an info message")
 from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision, BinaryF1Score
 from sklearn.preprocessing import MinMaxScaler
 
 
 # F1: need thresholded predictions
-def prepare_preds_for_metric(metric, preds):
-    """
-    Prepare predictions for a given metric:
-    - For F1Score (binary or multiclass): apply threshold or argmax
-    - For AUROC and AUPRC: raw logits are fine
-    """
-    if isinstance(metric, (BinaryF1Score, MulticlassF1Score)):
-        if preds.ndim == 1:  # Binary case: preds are logits
-            preds = (torch.sigmoid(preds) > 0.5).long()
-        else:  # Multiclass case: preds are logits
-            preds = torch.argmax(preds, dim=1)
-    return preds
+def prepare_preds_for_f1(preds: torch.Tensor, threshold: float):
+    return (torch.sigmoid(preds) > threshold).long()
 
 
 def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats , edge_feats1, edge_feats2, 
@@ -33,6 +33,12 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     """
     Executes a training or evaluation epoch for dual link prediction tasks.
     """
+
+    # For validation only: keep a list of all preds+labels
+    all_val_preds = []
+    all_val_labels = []
+    # Initialize the best threshold (if not already in args)
+    best_threshold = getattr(args, 'best_threshold', 0.5)
     time_epoch = 0
     ###################################################
     # Setup modes
@@ -81,8 +87,10 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         
     ###################################################
     # Initialize variables for loss and metrics
-    # subgraphs1, elabel1 = subgraphs1
-    # subgraphs2, elabel2 = subgraphs2
+    #Hasan
+    subgraphs1, elabel1 = subgraphs1
+    subgraphs2, elabel2 = subgraphs2
+
     loss_lst = []
     MLAUROC.reset()
     MLAUPRC.reset()
@@ -116,29 +124,47 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         subgraph_data1 = construct_mini_batch_giant_graph(subgraph_data1, args.max_edges)
         subgraph_data2 = construct_mini_batch_giant_graph(subgraph_data2, args.max_edges)
         
-        
-        ###################################################
-        # Raw edge feats 
-        if edge_feats1 is not None:
-            subgraph_edge_feats1 = edge_feats1[subgraph_data1['eid']]
-        else:
-            subgraph_edge_feats1 = None
-
-        if edge_feats2 is not None:
-            subgraph_edge_feats2 = edge_feats2[subgraph_data2['eid']]
-        else:
-            subgraph_edge_feats2 = None
         ###################################################
         # Edge timestamps
         
-        subgraph_edts1 = torch.from_numpy(subgraph_data1['edts']).float()
-        subgraph_edts2 = torch.from_numpy(subgraph_data2['edts']).float()
+        subgraph_edts1 = torch.as_tensor(subgraph_data1['edts'],dtype=torch.float32,device=args.device)
+        subgraph_edts2 = torch.as_tensor(subgraph_data2['edts'],dtype=torch.float32,device=args.device)
+        merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0) 
+        ###################################################
+        # Raw edge feats 
+
+        def get_subgraph_edge_feats(edge_feats, subgraph_data, subgraph_edts, edge_feat_dims, device):
+            if edge_feats is not None:
+                eid_tensor = torch.as_tensor(subgraph_data['eid'], dtype=torch.long, device=edge_feats.device)
+                return edge_feats[eid_tensor]
+            else:
+                return torch.zeros((subgraph_edts.shape[0], edge_feat_dims), device=device)
+
+        subgraph_edge_feats1 = get_subgraph_edge_feats(
+            edge_feats1, subgraph_data1, subgraph_edts1, args.edge_feat_dims, args.device)
+
+        subgraph_edge_feats2 = get_subgraph_edge_feats(
+            edge_feats2, subgraph_data2, subgraph_edts2, args.edge_feat_dims, args.device)
+
+        merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)
         
+        # operated_feats_1 = torch.cat([
+        #     subgraph_edge_feats1,
+        #     subgraph_edge_feats2
+        # ], dim=1)
+
+        # operated_feats_2 = torch.cat([
+        #     subgraph_edge_feats2,
+        #     subgraph_edge_feats1
+        # ], dim=1)
+
+        # merged_edge_feats = torch.cat([operated_feats_1, operated_feats_2], dim=0)
+
         ###################################################
         # Handle node features if required
         if args.use_graph_structure and node_feats is not None:
             num_of_df_links1 = len(subgraph_data_list1) //  (cached_neg_samples1 + 2)   
-            subgraph_node_feats1 = compute_sign_feats(node_feats[:238], df1, cur_inds1, num_of_df_links1, subgraph_data1['root_nodes'], args, num_nodes = args.num_nodes1)
+            subgraph_node_feats1 = compute_sign_feats(node_feats[:args.num_nodes1], df1, cur_inds1, num_of_df_links1, subgraph_data1['root_nodes'], args, num_nodes = args.num_nodes1)
             cur_inds1 += num_of_df_links1
             
             num_of_df_links2 = len(subgraph_data_list2) //  (cached_neg_samples2 + 2)
@@ -151,13 +177,25 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         
         ###################################################
         # Scale edge timestamps
-        scaler1.fit(subgraph_edts1.reshape(-1,1))
-        subgraph_edts1 = scaler1.transform(subgraph_edts1.reshape(-1,1)).ravel().astype(np.float32) * 1000
-        subgraph_edts1 = torch.from_numpy(subgraph_edts1)
+
+        #Hasan
+        # scaler1.fit(subgraph_edts1.reshape(-1,1))
+        # subgraph_edts1 = scaler1.transform(subgraph_edts1.reshape(-1,1)).ravel().astype(np.float32) * 1000
+        # subgraph_edts1 = torch.from_numpy(subgraph_edts1)
         
-        scaler2.fit(subgraph_edts2.reshape(-1,1))
-        subgraph_edts2 = scaler2.transform(subgraph_edts2.reshape(-1,1)).ravel().astype(np.float32) * 1000
-        subgraph_edts2 = torch.from_numpy(subgraph_edts2)
+        # scaler2.fit(subgraph_edts2.reshape(-1,1))
+        # subgraph_edts2 = scaler2.transform(subgraph_edts2.reshape(-1,1)).ravel().astype(np.float32) * 1000
+        # subgraph_edts2 = torch.from_numpy(subgraph_edts2)
+
+        # min–max scale to [0,1000]
+
+        min1, max1 = subgraph_edts1.min(), subgraph_edts1.max()
+        span1 = (max1 - min1).clamp(min=1e-6)      # avoid /0
+        subgraph_edts1 = ((subgraph_edts1 - min1) / span1) * 1000
+
+        min2, max2 = subgraph_edts2.min(), subgraph_edts2.max()
+        span2 = (max2 - min2).clamp(min=1e-6)
+        subgraph_edts2 = ((subgraph_edts2 - min2) / span2) * 1000
 
 
         ###################################################
@@ -177,29 +215,52 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             num_edges2 = all_edge_indptr2[i+1] - all_edge_indptr2[i]
             all_inds2.extend([args.max_edges * i + j for j in range(num_edges2)])
             has_temporal_neighbors2.append(num_edges2 > 0)
-            
-
-        merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)  # [num_edges1 + num_edges2]
-
-        merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0)  # [num_edges1 + num_edges2]
+        
 
         merged_batch_size = len(has_temporal_neighbors1) + len(has_temporal_neighbors2)
 
-        merged_node_feats = torch.cat([subgraph_node_feats1, subgraph_node_feats2], dim=0) 
+
+        if subgraph_node_feats1 is None and subgraph_node_feats2 is None:
+            merged_node_feats = None
+        elif subgraph_node_feats1 is None:
+            merged_node_feats = subgraph_node_feats2
+        elif subgraph_node_feats2 is None:
+            merged_node_feats = subgraph_node_feats1
+        else:
+            merged_node_feats = torch.cat([subgraph_node_feats1,
+                                        subgraph_node_feats2], dim=0)
+
 
         # Prepare inputs for the model
-        model_inputs = [
-            merged_edge_feats.to(args.device),   
-            merged_edge_ts.to(args.device),     
-            merged_batch_size, 
-            torch.tensor(all_inds1 + all_inds2).long()
-        ]
+        #Hasan
+        # inputs = [
+        #     merged_edge_feats.to(args.device),   
+        #     merged_edge_ts.to(args.device),     
+        #     merged_batch_size, 
+        #     torch.tensor(all_inds1 + all_inds2).long()
+        # ]
+
+        
+        # mask = (elabel1[ind] == 1) & (elabel2[ind] == 1)
+        # subgraph_edge_type = torch.from_numpy(mask.astype('int64')).long().to(args.device)
+
+
+        # print("elabel1[ind",elabel1[ind].shape)
+        # print("elabel2[ind",elabel2[ind].shape)
+
+        subgraph_edge_type = elabel2[ind]
+        inputs = [
+                merged_edge_feats.to(args.device), 
+                merged_edge_ts.to(args.device), 
+                merged_batch_size, 
+                torch.tensor(all_inds1 + all_inds2, dtype=torch.long, device=args.device),  
+                torch.tensor(list(subgraph_edge_type), dtype=torch.long, device=args.device)]
         
         start_time = time.time()
         
         # Forward pass through the model
         loss, pred, edge_label= model(
-            model_inputs, 
+            inputs, 
             neg_samples=max(neg_samples1, neg_samples2),  # Ensure consistency
             node_feats=merged_node_feats  
         )
@@ -215,9 +276,15 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         MLAUROC.update(pred, edge_label)
         MLAUPRC.update(pred, edge_label)
 
-        # Automatically prepare predictions for F1
-        prepared_preds = prepare_preds_for_metric(MLF1, pred)
-        MLF1.update(prepared_preds, edge_label)
+        if mode == 'valid':
+            # For validation mode, store predictions and labels for thresholding
+            all_val_preds.append(pred.detach().cpu())
+            all_val_labels.append(edge_label.detach().cpu())
+        
+        else:
+            # train & test: binarize with last known threshold
+            bin_preds = prepare_preds_for_f1(pred, best_threshold).squeeze()
+            MLF1.update(bin_preds, edge_label.view(-1).long())
 
         
         # Accumulate loss
@@ -229,9 +296,35 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     # Compute final metrics
     total_auroc = MLAUROC.compute()
     total_auprc = MLAUPRC.compute()
-    total_f1 = MLF1.compute()
 
-        # Convert metric values to Python floats if they are tensors.
+    # For validation mode, find the best threshold only once
+    if mode == 'valid':
+        # 1) pull logits and labels off GPU as plain Python lists
+        val_preds  = torch.cat(all_val_preds).detach().cpu().tolist()   # raw logits
+        val_labels = torch.cat(all_val_labels).detach().cpu().tolist()  # 0/1 labels
+
+        # 2) convert logits → probabilities in Python
+        val_probs = [1.0 / (1.0 + math.exp(-p)) for p in val_preds]
+
+        # 3) sweep thresholds to pick best F1
+        best_tau, best_f1 = 0.5, -1.0
+        for τ in np.linspace(0.0, 1.0, 101):
+            pred_bin = [1 if prob >= τ else 0 for prob in val_probs]
+            f1       = f1_score(val_labels, pred_bin)
+            if f1 > best_f1:
+                best_f1, best_tau = f1, τ
+
+        args.best_threshold = best_tau
+        logging.info(f"Chosen F1 threshold: {best_tau:.2f} → for best F1 {best_f1:.4f}")
+
+        # 4) compute final F1 at best_tau
+        val_bin   = [1 if prob >= best_tau else 0 for prob in val_probs]
+        total_f1  = f1_score(val_labels, val_bin)
+    else:
+        total_f1 = MLF1.compute().item()
+    
+
+    # Convert metric values to Python floats if they are tensors.
     if torch.is_tensor(total_auroc):
         total_auroc = total_auroc.item()
     if torch.is_tensor(total_auprc):
@@ -382,14 +475,20 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'lowest loss': low_loss,
         'Total train time': user_train_total_time
     }
-    # with open(f"results/nodefeatuse_{args.use_onehot_node_feats}_results.json", "w") as f:
-    #     json.dump(results, f)
+    save_result_folder = Path("results") / args.data
+    save_result_folder.mkdir(parents=True, exist_ok=True)
+    save_result_path = save_result_folder / f"node{args.use_onehot_node_feats}_pair{args.use_pair_index}_type{args.use_type_feats}_results.json"
+    with open(save_result_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    print(f"Results written to {save_result_path}")
     
     return best_auc_model
 
 
 
 def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args, num_nodes):
+    root_nodes = torch.as_tensor(root_nodes, dtype=torch.long, device=args.device)
     num_duplicate = len(root_nodes) // num_links 
     # num_nodes = args.num_nodes
 
@@ -406,8 +505,9 @@ def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args, num
         else:
             prev_i = max(0, i - args.structure_time_gap)
             cur_df = df[prev_i: i] # get adj's row, col indices (as undirected)
-            src = torch.from_numpy(cur_df.src.values)
-            dst = torch.from_numpy(cur_df.dst.values)
+            # assuming you have an `args.device` you want to move to
+            src = torch.as_tensor(cur_df["src"].values, dtype=torch.long, device=args.device)
+            dst = torch.as_tensor(cur_df["dst"].values, dtype=torch.long, device=args.device)
             edge_index = torch.stack([
                 torch.cat([src, dst]), 
                 torch.cat([dst, src])
@@ -431,3 +531,80 @@ def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args, num
         i += len(_root_ind) // num_duplicate
 
     return output_feats
+
+# def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes_np, args, num_nodes):
+#     device = args.device
+#     # 1) Tensor-ify your root_nodes once:
+#     root_nodes = torch.as_tensor(root_nodes_np, dtype=torch.long, device=device)
+    
+#     # 2) carve out equally-sized groups of `num_links`
+#     num_groups = root_nodes.numel() // num_links
+#     root_inds = root_nodes.view(num_groups, num_links)
+    
+#     # 3) prepare output
+#     output_feats = torch.zeros(root_nodes.numel(), node_feats.size(1), device=device)
+#     i = start_i
+    
+#     # 4) loop per-group
+#     for group in root_inds:  # each group is a LongTensor of link-indices
+#         if i == 0 or args.structure_hops == 0:
+#             sign_feats = node_feats.clone()
+#         else:
+#             prev_i = max(0, i - args.structure_time_gap)
+#             cur_df = df[prev_i: i]
+#             src = torch.as_tensor(cur_df.src.values, dtype=torch.long, device=device)
+#             dst = torch.as_tensor(cur_df.dst.values, dtype=torch.long, device=device)
+#             edge_index = torch.stack([torch.cat([src, dst]), torch.cat([dst, src])])
+
+#             # 1) move to CPU
+#             ei_cpu = edge_index.cpu()
+
+#             # 2) do unique/counts on CPU
+#             ei_u, cnt_u = torch.unique(ei_cpu, dim=1, return_counts=True)
+
+#             # after you’ve done the CPU‐side unique and have `ei_u` and `cnt_u`:
+
+#             rows = ei_u[0]
+#             cols = ei_u[1]
+#             counts = cnt_u
+
+#             # build a mask that keeps only valid, non‐self‐loop edges
+#             valid = (
+#                 (rows != cols) &
+#                 (rows >= 0) &
+#                 (rows < num_nodes) &
+#                 (cols >= 0) &
+#                 (cols < num_nodes)
+#             )
+
+#             rows = rows[valid]
+#             cols = cols[valid]
+#             counts = counts[valid]
+
+#             # now build on CPU
+#             adj_cpu = SparseTensor(
+#                 value = counts.to(dtype=torch.float32),
+#                 row   = rows   .to(dtype=torch.long),
+#                 col   = cols   .to(dtype=torch.long),
+#                 sparse_sizes=(num_nodes, num_nodes)
+#             )
+
+#             # move the normalized version to GPU
+#             adj_norm = row_norm(adj_cpu).to(args.device)
+
+
+
+
+#             # … now adj_norm is a GPU‐resident SparseTensor, ready for matmuls …
+#             sign_feats = [ node_feats ]
+#             for _ in range(args.structure_hops):
+#                 sign_feats.append(adj_norm @ sign_feats[-1])
+#             sign_feats = torch.stack(sign_feats, dim=0).sum(dim=0)
+  
+        
+#         # 5) assign into output for all indices in this group
+#         output_feats[group] = sign_feats[group]
+        
+#         i += num_links
+    
+#     return output_feats

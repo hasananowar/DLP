@@ -27,7 +27,7 @@ def get_args():
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--max_edges', type=int, default=50)
     parser.add_argument('--num_edgeType', type=int, default=0, help='num of edgeType')
-    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--predict_class', action='store_true')
     
@@ -142,7 +142,6 @@ def load_all_data(args):
     
     # Feature pre-processing
     node_feat_dims = 0 if node_feats is None else node_feats.shape[1]
-    # node_feat2_dims = 0 if node_feats2 is None else node_feats2.shape[1]
     edge_feat1_dims = 0 if edge_feats1 is None else edge_feats1.shape[1]
     edge_feat2_dims = 0 if edge_feats2 is None else edge_feats2.shape[1]
     
@@ -159,10 +158,6 @@ def load_all_data(args):
         node_feats = node_feats.to(torch.float32)
         node_feat_dims = node_feats.size(1)
 
-        # num_classes2 = int(node_feats2.max().item())+1  # Determine the number of unique classes
-        # node_feats2 = torch.nn.functional.one_hot(node_feats2.to(torch.int64).squeeze(), num_classes=num_classes2)
-        # node_feats2 = node_feats2.to(torch.float32)
-        # node_feat2_dims = node_feats2.size(1)
 
         print('One-hot node feature dim =', (node_feats.shape))
     
@@ -174,9 +169,8 @@ def load_all_data(args):
         # node_feat2_dims = 0
 
     if args.use_pair_index:
-        # Create an embedding layer for pair indices using df1.dst_idx.
-        # We assume that the maximum value in df1.dst_idx defines the total number of indices.
-        num_pair_index = df1.dst_idx.max() + 1  
+        # Create an embedding layer for pair indices 
+        num_pair_index = max(df1.dst_idx.max(), df2.dst_idx.max()) + 1  
         pair_embedding_layer = torch.nn.Embedding(num_pair_index, args.pair_dims)
 
         # Convert the destination indices from both df1 and df2 to torch tensors.
@@ -193,16 +187,15 @@ def load_all_data(args):
 
         print('Pair embedding feature dim 1: %d, feature dim 2: %d' % (pair_feats1_dims, pair_feats2_dims))
     if args.use_type_feats:
-        # Convert the edge type labels (assumed to be numeric) from df1 and df2.
-        # Subtract 1 to convert to 0-indexing for one-hot encoding.
+        # Convert the edge type labels 
         edge_type1 = df1.label.values
         args.num_edgeType1 = len(set(edge_type1.tolist()))
-        type_feats1 = torch.nn.functional.one_hot(torch.from_numpy(edge_type1 - 1), num_classes=args.num_edgeType1)
+        type_feats1 = torch.nn.functional.one_hot(torch.as_tensor(edge_type1, dtype=torch.long),num_classes=args.num_edgeType1)
         type_feats1_dims = type_feats1.size(1)
 
         edge_type2 = df2.label.values
         args.num_edgeType2 = len(set(edge_type2.tolist()))
-        type_feats2 = torch.nn.functional.one_hot(torch.from_numpy(edge_type2 - 1), num_classes=args.num_edgeType2)
+        type_feats2 = torch.nn.functional.one_hot(torch.as_tensor(edge_type2, dtype=torch.long),num_classes=args.num_edgeType2)
         type_feats2_dims = type_feats2.size(1)
 
         print('Type feature dim 1: %d, type feature dim 2: %d' % (type_feats1_dims, type_feats2_dims))
@@ -304,10 +297,10 @@ if __name__ == "__main__":
 
     # Set specific arguments related to graph structure and feature usage
     args.use_graph_structure = True
-    # args.ignore_node_feats = True  # We only use graph structure
-    args.use_onehot_node_feats = True # Use node features
-    # args.use_type_feats = True     # Type encoding
-    args.use_pair_index = True     # Pair encoding
+    args.ignore_node_feats = True  # We only use graph structure
+    # args.use_onehot_node_feats = True # Use node features
+    args.use_type_feats = True     # Type encoding
+    # args.use_pair_index = True     # Pair encoding
     args.use_cached_subgraph = True
 
     print(args)

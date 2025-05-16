@@ -25,7 +25,7 @@ class TimeEncode(nn.Module):
         self.reset_parameters()
     
     def reset_parameters(self, ):
-        self.w.weight = nn.Parameter((torch.from_numpy(1 / 10 ** np.linspace(0, 9, self.dim, dtype=np.float32))).reshape(self.dim, -1))
+        self.w.weight = nn.Parameter((torch.as_tensor(1 / 10 ** np.linspace(0, 9, self.dim, dtype=np.float32), dtype=torch.float32)).reshape(self.dim, -1))
         self.w.bias = nn.Parameter(torch.zeros(self.dim))
 
         self.w.weight.requires_grad = False
@@ -386,7 +386,7 @@ class EdgePredictor_per_node(nn.Module):
         h_neg_edge2 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst1, h_neg_dst2], dim=-1)
         h_neg_edge3 = torch.cat([h_src_combined.tile(neg_samples, 1), h_pos_dst2, h_neg_dst1], dim=-1)
 
-            # Apply MLP to negative edges
+        # Apply MLP to negative edges
         h_neg_edge1 = self.mlp(h_neg_edge1)
         h_neg_edge2 = self.mlp(h_neg_edge2)
         h_neg_edge3 = self.mlp(h_neg_edge3)
@@ -395,47 +395,48 @@ class EdgePredictor_per_node(nn.Module):
         h_neg_edge_all = torch.cat([h_neg_edge1, h_neg_edge2, h_neg_edge3], dim=0)
         
         # positives and negatives Class Balance
-        
 
-        
         num_pos = h_pos_edge.size(0)
+        print("num_pos", num_pos)
+        print("num_neg", h_neg_edge_all.size(0))
         num_neg = h_neg_edge_all.size(0)
 
         # Undersampling
-        # if num_neg > num_pos:
-        #     # Randomly select a subset of negatives equal in number to positives
-        #     perm = torch.randperm(num_neg)
-        #     h_neg_edge = h_neg_edge_all[perm][:num_pos]
-        # else:
-        #     h_neg_edge = h_neg_edge_all
-
-        # return h_pos_edge, h_neg_edge
-    
-
-        # Oversampling
-        if num_pos < num_neg:
-            # too few positives → duplicate some positives
-            extra_idx = torch.randint(
-                0, num_pos, (num_neg - num_pos,),
-                device=h_pos_edge.device
-            )
-            h_pos_edge = torch.cat([h_pos_edge, h_pos_edge[extra_idx]], dim=0)
-            h_neg_edge = h_neg_edge_all
-
-        elif num_neg < num_pos:
-            # too few negatives → duplicate some negatives
-            extra_idx = torch.randint(
-                0, num_neg, (num_pos - num_neg,),
-                device=h_neg_edge_all.device
-            )
-            h_neg_edge = torch.cat([h_neg_edge_all, h_neg_edge_all[extra_idx]], dim=0)
-            h_pos_edge = h_pos_edge
-
+        if num_neg > num_pos:
+            # Randomly select a subset of negatives equal in number to positives
+            print("undersampling")
+            perm = torch.randperm(num_neg)
+            h_neg_edge = h_neg_edge_all[perm][:num_pos]
         else:
-            # already balanced
             h_neg_edge = h_neg_edge_all
 
         return h_pos_edge, h_neg_edge
+    
+
+        # Oversampling
+        # if num_pos < num_neg:
+        #     # too few positives → duplicate some positives
+        #     extra_idx = torch.randint(
+        #         0, num_pos, (num_neg - num_pos,),
+        #         device=h_pos_edge.device
+        #     )
+        #     h_pos_edge = torch.cat([h_pos_edge, h_pos_edge[extra_idx]], dim=0)
+        #     h_neg_edge = h_neg_edge_all
+
+        # elif num_neg < num_pos:
+        #     # too few negatives → duplicate some negatives
+        #     extra_idx = torch.randint(
+        #         0, num_neg, (num_pos - num_neg,),
+        #         device=h_neg_edge_all.device
+        #     )
+        #     h_neg_edge = torch.cat([h_neg_edge_all, h_neg_edge_all[extra_idx]], dim=0)
+        #     h_pos_edge = h_pos_edge
+
+        # else:
+        #     # already balanced
+        #     h_neg_edge = h_neg_edge_all
+
+        # return h_pos_edge, h_neg_edge
         
         
     
@@ -459,11 +460,23 @@ class Dual_Interface(nn.Module):
             self.base_model.reset_parameters()
         self.edge_predictor.reset_parameters()
 
-    def forward(self, model_inputs, neg_samples,node_feats):        
+        #Hasan
+    
+    def forward(self, model_inputs, neg_samples, node_feats):
+        pos_edge_label = model_inputs[-1].view(-1).float()  # shape [N_pos]
+        model_inputs   = model_inputs[:-1]
         pred_pos, pred_neg = self.predict(model_inputs, neg_samples, node_feats)
-        all_pred = torch.cat((pred_pos, pred_neg), dim=0)
-        all_edge_label = torch.cat((torch.ones_like(pred_pos), 
-                                     torch.zeros_like(pred_neg)), dim=0)
+        pos_preds = pred_pos.view(-1)  # [N_pos]
+        neg_preds = pred_neg.view(-1)  # [N_neg]
+
+        all_pred = torch.cat([pos_preds, neg_preds], dim=0)
+
+        neg_labels = torch.zeros(neg_preds.size(0),dtype=torch.float32,device=all_pred.device)
+
+        # 6) concatenate labels → [N_pos+N_neg]
+        all_edge_label = torch.cat([pos_edge_label, neg_labels], dim=0)
+
+        # 7) compute BCEWithLogits (expects float inputs & float targets)
         loss = self.criterion(all_pred, all_edge_label).mean()
 
         return loss, all_pred, all_edge_label

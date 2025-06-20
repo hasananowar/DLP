@@ -475,7 +475,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'lowest loss': low_loss,
         'Total train time': user_train_total_time
     }
-    save_result_folder = Path("results") / args.data
+    save_result_folder = Path("onehot_results") / args.data
     save_result_folder.mkdir(parents=True, exist_ok=True)
     save_result_path = save_result_folder / f"node{args.use_onehot_node_feats}_pair{args.use_pair_index}_type{args.use_type_feats}_results.json"
     with open(save_result_path, "w") as f:
@@ -531,80 +531,3 @@ def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args, num
         i += len(_root_ind) // num_duplicate
 
     return output_feats
-
-# def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes_np, args, num_nodes):
-#     device = args.device
-#     # 1) Tensor-ify your root_nodes once:
-#     root_nodes = torch.as_tensor(root_nodes_np, dtype=torch.long, device=device)
-    
-#     # 2) carve out equally-sized groups of `num_links`
-#     num_groups = root_nodes.numel() // num_links
-#     root_inds = root_nodes.view(num_groups, num_links)
-    
-#     # 3) prepare output
-#     output_feats = torch.zeros(root_nodes.numel(), node_feats.size(1), device=device)
-#     i = start_i
-    
-#     # 4) loop per-group
-#     for group in root_inds:  # each group is a LongTensor of link-indices
-#         if i == 0 or args.structure_hops == 0:
-#             sign_feats = node_feats.clone()
-#         else:
-#             prev_i = max(0, i - args.structure_time_gap)
-#             cur_df = df[prev_i: i]
-#             src = torch.as_tensor(cur_df.src.values, dtype=torch.long, device=device)
-#             dst = torch.as_tensor(cur_df.dst.values, dtype=torch.long, device=device)
-#             edge_index = torch.stack([torch.cat([src, dst]), torch.cat([dst, src])])
-
-#             # 1) move to CPU
-#             ei_cpu = edge_index.cpu()
-
-#             # 2) do unique/counts on CPU
-#             ei_u, cnt_u = torch.unique(ei_cpu, dim=1, return_counts=True)
-
-#             # after you’ve done the CPU‐side unique and have `ei_u` and `cnt_u`:
-
-#             rows = ei_u[0]
-#             cols = ei_u[1]
-#             counts = cnt_u
-
-#             # build a mask that keeps only valid, non‐self‐loop edges
-#             valid = (
-#                 (rows != cols) &
-#                 (rows >= 0) &
-#                 (rows < num_nodes) &
-#                 (cols >= 0) &
-#                 (cols < num_nodes)
-#             )
-
-#             rows = rows[valid]
-#             cols = cols[valid]
-#             counts = counts[valid]
-
-#             # now build on CPU
-#             adj_cpu = SparseTensor(
-#                 value = counts.to(dtype=torch.float32),
-#                 row   = rows   .to(dtype=torch.long),
-#                 col   = cols   .to(dtype=torch.long),
-#                 sparse_sizes=(num_nodes, num_nodes)
-#             )
-
-#             # move the normalized version to GPU
-#             adj_norm = row_norm(adj_cpu).to(args.device)
-
-
-
-
-#             # … now adj_norm is a GPU‐resident SparseTensor, ready for matmuls …
-#             sign_feats = [ node_feats ]
-#             for _ in range(args.structure_hops):
-#                 sign_feats.append(adj_norm @ sign_feats[-1])
-#             sign_feats = torch.stack(sign_feats, dim=0).sum(dim=0)
-  
-        
-#         # 5) assign into output for all indices in this group
-#         output_feats[group] = sign_feats[group]
-        
-#         i += num_links
-    
-#     return output_feats

@@ -148,17 +148,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
 
         merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)
         
-        # operated_feats_1 = torch.cat([
-        #     subgraph_edge_feats1,
-        #     subgraph_edge_feats2
-        # ], dim=1)
-
-        # operated_feats_2 = torch.cat([
-        #     subgraph_edge_feats2,
-        #     subgraph_edge_feats1
-        # ], dim=1)
-
-        # merged_edge_feats = torch.cat([operated_feats_1, operated_feats_2], dim=0)
 
         ###################################################
         # Handle node features if required

@@ -399,7 +399,6 @@ class EdgePredictor_per_node(nn.Module):
 
         # Undersampling
         if num_neg > num_pos:
-            print("undersampling")
             perm = torch.randperm(num_neg)
             h_neg_edge = h_neg_edge_all[perm][:num_pos]
         else:

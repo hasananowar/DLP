@@ -1,4 +1,5 @@
 python setup.py build_ext --inplace
-python gen_graph.py --data flavanone/edges1.csv
-python gen_graph.py --data flavanone/edges2.csv
-python train.py --data flavanone --epochs 300
+python gen_graph.py --data benzoin/edges1.csv
+python gen_graph.py --data benzoin/edges2.csv
+python train.py --data benzoin --epochs 300
+python train.py --data benzoin --epochs 300 --use_pair_index

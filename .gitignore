@@ -21,6 +21,12 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.so
+*.sh
+
+train_new.py
+dual_link_pred_train_utils_new.py
+test.ipynb
 
 # dotenv
 .env
@@ -42,8 +48,8 @@ Thumbs.db
 # IDE specific
 .vscode/
 .idea/
-*.sh
 new_*
 old_*
 DATA/
-DATA/flavanone/HB_80000_81000.csv
+
+models/

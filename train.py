@@ -150,9 +150,9 @@ def load_all_data(args):
 
 
     if args.use_pair_index:
-        num_pair_index = max(df1.dst_idx.max(), df2.dst_idx.max()) + 1  
+        # num_pair_index = max(df1.dst_idx.max(), df2.dst_idx.max()) + 1  
+        num_pair_index = max(df1['dst_idx'].max(), df2['dst_idx'].max()) + 1 
 
-        # Convert the destination indices from both df1 and df2 to torch tensors.
         pair_index1 = torch.tensor(df1.dst_idx.values, dtype=torch.long)
         pair_index2 = torch.tensor(df2.dst_idx.values, dtype=torch.long)
 
@@ -165,7 +165,21 @@ def load_all_data(args):
         pair_feats1 = torch.nn.functional.one_hot(pair_index1, num_classes=num_pair_index).float()
         pair_feats2 = torch.nn.functional.one_hot(pair_index2, num_classes=num_pair_index).float()
 
+        #################### 
+        pair_diff1 = torch.abs(pair_feats1 - pair_feats2)   
+        pair_mul1 = pair_feats1 * pair_feats2              
+
+        pair_diff2 = torch.abs(pair_feats2 - pair_feats1)
+        pair_mul2 = pair_feats2 * pair_feats1
+
+        pair_feats_combined1 = torch.cat([pair_diff1, pair_mul1], dim=1)
+        pair_feats_combined2 = torch.cat([pair_diff2, pair_mul2], dim=1)
+
+        ####################
+
         # Get dimensions of the pair features.
+        print('pair_feats1 shape:', pair_feats1.shape)
+        print('pair_feats2 shape:', pair_feats2.shape)
         pair_feats1_dims = pair_feats1.size(1)
         pair_feats2_dims = pair_feats2.size(1)
 
@@ -207,8 +221,8 @@ def load_all_data(args):
         
     elif args.use_pair_index and not args.use_type_feats:
         # Use only pair index features.
-        edge_feats1 = pair_feats1
-        edge_feats2 = pair_feats2
+        edge_feats1 = pair_feats_combined1
+        edge_feats2 = pair_feats_combined2
 
         edge_feat1_dims = edge_feats1.size(1)
         edge_feat2_dims = edge_feats2.size(1)
@@ -279,8 +293,8 @@ if __name__ == "__main__":
 
     # Set specific arguments related to graph structure and feature usage
     args.use_graph_structure = True
-    args.ignore_node_feats = True  # We only use graph structure
-    # args.use_onehot_node_feats = True # Use node features
+    # args.ignore_node_feats = True  # We only use graph structure
+    args.use_onehot_node_feats = True # Use node features
     # args.use_type_feats = True     # Type encoding
     # args.use_pair_index = True     # Pair encoding
     args.use_cached_subgraph = True

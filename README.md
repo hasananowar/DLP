@@ -19,10 +19,16 @@ The following libraries and frameworks are required to run the code. Make sure t
 
 ### How to use
 
+#### Install libraries
+
+```shell
+pip install -r requirements.txt
+```
+
 #### Generate edge from 3D coordinates of atoms
 
 ```shell
-python gen_edge.py
+python gen_data.ipynb
 ```
 
 #### Compile C++ sampler 
@@ -39,7 +45,7 @@ python gen_graph.py --data FILT_HB/edges2.csv
 #### Dual Link prediction
 
 ```shell
-python train.py --data FILT_HB --epochs 50
+python train.py --data FILT_HB
 ```
 
 

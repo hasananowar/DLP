@@ -220,24 +220,15 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
                                         subgraph_node_feats2], dim=0)
 
 
-        # Prepare inputs for the model
-        #Hasan
-        # inputs = [
-        #     merged_edge_feats.to(args.device),   
-        #     merged_edge_ts.to(args.device),     
-        #     merged_batch_size, 
-        #     torch.tensor(all_inds1 + all_inds2).long()
-        # ]
-
         
         # mask = (elabel1[ind] == 1) & (elabel2[ind] == 1)
         # subgraph_edge_type = torch.from_numpy(mask.astype('int64')).long().to(args.device)
 
 
-        # print("elabel1[ind",elabel1[ind].shape)
-        # print("elabel2[ind",elabel2[ind].shape)
+        mask = (elabel2[ind] == 1)
+        subgraph_edge_type = torch.from_numpy(mask.astype(np.int64)).to(args.device)
 
-        subgraph_edge_type = elabel2[ind]
+        # subgraph_edge_type = elabel2[ind]
         inputs = [
                 merged_edge_feats.to(args.device), 
                 merged_edge_ts.to(args.device), 
@@ -289,8 +280,8 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     # For validation mode, find the best threshold only once
     if mode == 'valid':
         # 1) pull logits and labels off GPU as plain Python lists
-        val_preds  = torch.cat(all_val_preds).detach().cpu().tolist()   # raw logits
-        val_labels = torch.cat(all_val_labels).detach().cpu().tolist()  # 0/1 labels
+        val_preds  = torch.cat(all_val_preds).detach().cpu().tolist()   
+        val_labels = torch.cat(all_val_labels).detach().cpu().tolist()  
 
         # 2) convert logits → probabilities in Python
         val_probs = [1.0 / (1.0 + math.exp(-p)) for p in val_preds]
@@ -464,7 +455,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'lowest loss': low_loss,
         'Total train time': user_train_total_time
     }
-    save_result_folder = Path("onehot_results") / args.data
+    save_result_folder = Path("pair_onehot_results") / args.data
     save_result_folder.mkdir(parents=True, exist_ok=True)
     save_result_path = save_result_folder / f"node{args.use_onehot_node_feats}_pair{args.use_pair_index}_type{args.use_type_feats}_results.json"
     with open(save_result_path, "w") as f:

@@ -131,10 +131,6 @@ def load_all_data(args):
     
     if args.use_onehot_node_feats:
         print('>>> Use one-hot node features')
-        # node_feats1 = torch.eye(args.num_nodes1)
-        # node_feat1_dims = node_feats1.size(1)
-        # node_feats2 = torch.eye(args.num_nodes2)
-        # node_feat2_dims = node_feats2.size(1)
 
         num_classes = int(node_feats.max().item())+1  # Determine the number of unique classes
         node_feats = torch.nn.functional.one_hot(node_feats.to(torch.int64).squeeze(), num_classes=num_classes)
@@ -156,11 +152,6 @@ def load_all_data(args):
         pair_index1 = torch.tensor(df1.dst_idx.values, dtype=torch.long)
         pair_index2 = torch.tensor(df2.dst_idx.values, dtype=torch.long)
 
-        # Obtain the embedding features for these indices
-        # pair_embedding_layer = torch.nn.Embedding(num_pair_index, args.pair_dims)
-        # pair_feats1 = pair_embedding_layer(pair_index1)
-        # pair_feats2 = pair_embedding_layer(pair_index2)
-
         # One-hot encode the indices 
         pair_feats1 = torch.nn.functional.one_hot(pair_index1, num_classes=num_pair_index).float()
         pair_feats2 = torch.nn.functional.one_hot(pair_index2, num_classes=num_pair_index).float()
@@ -177,14 +168,8 @@ def load_all_data(args):
 
         ####################
 
-        # Get dimensions of the pair features.
-        print('pair_feats1 shape:', pair_feats1.shape)
-        print('pair_feats2 shape:', pair_feats2.shape)
-        pair_feats1_dims = pair_feats1.size(1)
-        pair_feats2_dims = pair_feats2.size(1)
+        print('Pair embedding feature dim 1: %d, feature dim 2: %d' % (pair_feats_combined1.size(1), pair_feats_combined2.size(1)))
 
-        print('Pair embedding feature dim 1: %d, feature dim 2: %d' % (pair_feats1_dims, pair_feats2_dims))
-    
     if args.use_type_feats:
         edge_type1 = df1.label.values
         args.num_edgeType1 = len(set(edge_type1.tolist()))

@@ -122,7 +122,7 @@ def load_all_data(args):
     print('Num nodes for data1 %d, Num nodes for data2 %d, num edges %d' % (args.num_nodes1, args.num_nodes2, args.num_edges))
     
     # Load features 
-    node_feats, edge_feats1, edge_feats2  = load_feat(args.data)  # Modify as needed
+    node_feats, edge_feats1, edge_feats2  = load_feat(args.data)  
     
     # Feature pre-processing
     node_feat_dims = 0 if node_feats is None else node_feats.shape[1]
@@ -132,7 +132,7 @@ def load_all_data(args):
     if args.use_onehot_node_feats:
         print('>>> Use one-hot node features')
 
-        num_classes = int(node_feats.max().item())+1  # Determine the number of unique classes
+        num_classes = int(node_feats.max().item())+1  
         node_feats = torch.nn.functional.one_hot(node_feats.to(torch.int64).squeeze(), num_classes=num_classes)
         node_feats = node_feats.to(torch.float32)
         node_feat_dims = node_feats.size(1)
@@ -183,7 +183,7 @@ def load_all_data(args):
 
         print('Type feature dim 1: %d, type feature dim 2: %d' % (type_feats1_dims, type_feats2_dims))
 
-    # Combine features based on configuration flags.
+    
     if args.use_type_feats and args.use_pair_index:
         # Concatenate type features and pair features along dimension 1.
         edge_feats1 = torch.cat([type_feats1, pair_feats1], dim=1)

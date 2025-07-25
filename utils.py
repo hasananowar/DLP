@@ -6,12 +6,11 @@ import pandas as pd
 from construct_subgraph import construct_mini_batch_giant_graph, get_parallel_sampler, get_mini_batch
 import torch_sparse
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
-
 from tqdm import tqdm
 
 ##############################################################################
 ##############################################################################
-##############################################################################
+
 # utility function
 def set_seed(seed):
     random.seed(seed)
@@ -35,7 +34,7 @@ def sym_norm(adj):
 
 ##############################################################################
 ##############################################################################
-##############################################################################
+
 # load data
 
 def load_feat(d):

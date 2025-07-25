@@ -166,15 +166,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         ###################################################
         # Scale edge timestamps
 
-        #Hasan
-        # scaler1.fit(subgraph_edts1.reshape(-1,1))
-        # subgraph_edts1 = scaler1.transform(subgraph_edts1.reshape(-1,1)).ravel().astype(np.float32) * 1000
-        # subgraph_edts1 = torch.from_numpy(subgraph_edts1)
-        
-        # scaler2.fit(subgraph_edts2.reshape(-1,1))
-        # subgraph_edts2 = scaler2.transform(subgraph_edts2.reshape(-1,1)).ravel().astype(np.float32) * 1000
-        # subgraph_edts2 = torch.from_numpy(subgraph_edts2)
-
         # min–max scale to [0,1000]
 
         min1, max1 = subgraph_edts1.min(), subgraph_edts1.max()
@@ -445,7 +436,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'lowest loss': low_loss,
         'Total train time': user_train_total_time
     }
-    save_result_folder = Path("pair_onehot_results") / args.data
+    save_result_folder = Path("results/pair_onehot_results") / args.data
     save_result_folder.mkdir(parents=True, exist_ok=True)
     save_result_path = save_result_folder / f"node{args.use_onehot_node_feats}_pair{args.use_pair_index}_type{args.use_type_feats}_results.json"
     with open(save_result_path, "w") as f:

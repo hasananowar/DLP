@@ -146,7 +146,6 @@ def load_all_data(args):
 
 
     if args.use_pair_index:
-        # num_pair_index = max(df1.dst_idx.max(), df2.dst_idx.max()) + 1  
         num_pair_index = max(df1['dst_idx'].max(), df2['dst_idx'].max()) + 1 
 
         pair_index1 = torch.tensor(df1.dst_idx.values, dtype=torch.long)
@@ -281,7 +280,7 @@ if __name__ == "__main__":
     # args.ignore_node_feats = True  # We only use graph structure
     args.use_onehot_node_feats = True # Use node features
     # args.use_type_feats = True     # Type encoding
-    args.use_pair_index = True     # Pair encoding
+    # args.use_pair_index = True     # Pair encoding
     args.use_cached_subgraph = True
 
     print(args)

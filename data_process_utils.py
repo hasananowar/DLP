@@ -129,16 +129,12 @@ def pre_compute_subgraphs(args, g, df, mode, input_data):
 
             # time-stamp for node = edge time-stamp
             ts = np.tile(rows.time.values, extra_neg_samples + 2).astype(np.float32)
-            #Hasan
             all_elabel.append(rows.label.values)
-            # all_elabel.append(rows.dst_idx.values)
             
             all_subgraphs.append(get_mini_batch(sampler, root_nodes, ts, args.sampled_num_hops))
             
             pbar.update(1)
         pbar.close()
-        #Hasan
-        # subgraph_elabel = all_subgraphs
         subgraph_elabel = (all_subgraphs, all_elabel)
         
         try:
@@ -167,7 +163,7 @@ def get_random_inds(num_subgraph, cached_neg_samples, neg_samples):
 
 def check_data_leakage(args, g, df):
     """
-    This is a function to double if the sampled graph has eid greater than the positive node pairs eid (if no then no data leakage)
+    This is a function to double check if the sampled graph has eid greater than the positive node pairs eid (if no then no data leakage)
     """
     for mode in ['train', 'valid', 'test']:
 

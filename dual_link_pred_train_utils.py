@@ -219,10 +219,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
                                         subgraph_node_feats2], dim=0)
 
 
-        
-        # mask = (elabel1[ind] == 1) & (elabel2[ind] == 1)
-        # subgraph_edge_type = torch.from_numpy(mask.astype('int64')).long().to(args.device)
-
 
         mask = (elabel2[ind] == 1)
         subgraph_edge_type = torch.from_numpy(mask.astype(np.int64)).to(args.device)
@@ -240,7 +236,7 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         # Forward pass through the model
         loss, pred, edge_label= model(
             inputs, 
-            neg_samples=max(neg_samples1, neg_samples2),  # Ensure consistency
+            neg_samples=max(neg_samples1, neg_samples2),  
             node_feats=merged_node_feats  
         )
 
@@ -251,7 +247,7 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         time_epoch += (time.time() - start_time)
         
         ###################################################
-        # AUROC and AUPRC: raw logits are fine; they will apply sigmoid internally
+        # AUROC and AUPRC: will apply sigmoid internally
         MLAUROC.update(pred, edge_label)
         MLAUPRC.update(pred, edge_label)
 
@@ -278,14 +274,10 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
 
     # For validation mode, find the best threshold only once
     if mode == 'valid':
-        # 1) pull logits and labels off GPU as plain Python lists
         val_preds  = torch.cat(all_val_preds).detach().cpu().tolist()   
         val_labels = torch.cat(all_val_labels).detach().cpu().tolist()  
-
-        # 2) convert logits → probabilities in Python
         val_probs = [1.0 / (1.0 + math.exp(-p)) for p in val_preds]
 
-        # 3) sweep thresholds to pick best F1
         best_tau, best_f1 = 0.5, -1.0
         for τ in np.linspace(0.0, 1.0, 101):
             pred_bin = [1 if prob >= τ else 0 for prob in val_probs]
@@ -296,14 +288,13 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         args.best_threshold = best_tau
         logging.info(f"Chosen F1 threshold: {best_tau:.2f} → for best F1 {best_f1:.4f}")
 
-        # 4) compute final F1 at best_tau
+        # compute final F1 at best_tau
         val_bin   = [1 if prob >= best_tau else 0 for prob in val_probs]
         total_f1  = f1_score(val_labels, val_bin)
     else:
         total_f1 = MLF1.compute().item()
     
 
-    # Convert metric values to Python floats if they are tensors.
     if torch.is_tensor(total_auroc):
         total_auroc = total_auroc.item()
     if torch.is_tensor(total_auprc):
@@ -484,7 +475,7 @@ def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args, num
         else:
             prev_i = max(0, i - args.structure_time_gap)
             cur_df = df[prev_i: i] # get adj's row, col indices (as undirected)
-            # assuming you have an `args.device` you want to move to
+  
             src = torch.as_tensor(cur_df["src"].values, dtype=torch.long, device=args.device)
             dst = torch.as_tensor(cur_df["dst"].values, dtype=torch.long, device=args.device)
             edge_index = torch.stack([
@@ -492,7 +483,7 @@ def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args, num
                 torch.cat([dst, src])
             ])
             edge_index, edge_cnt = torch.unique(edge_index, dim=1, return_counts=True) 
-            mask = edge_index[0]!=edge_index[1] # ignore self-loops
+            mask = edge_index[0]!=edge_index[1] 
             adj = SparseTensor(
                 value = torch.ones_like(edge_cnt[mask]).float(),
                 row = edge_index[0][mask].long(),

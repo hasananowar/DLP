@@ -158,7 +158,6 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             
             num_of_df_links2 = len(subgraph_data_list2) //  (cached_neg_samples2 + 2)
             subgraph_node_feats2 = compute_sign_feats(node_feats, df2, cur_inds2, num_of_df_links2, subgraph_data2['root_nodes'], args, num_nodes = args.num_nodes2)   
-            # subgraph_node_feats2 = compute_sign_feats(torch.vstack([node_feats[:128],node_feats[-110:]]), df2, cur_inds2, num_of_df_links2, subgraph_data2['root_nodes'], args, num_nodes = args.num_nodes2)
             cur_inds2 += num_of_df_links2
         else:
             subgraph_node_feats1 = None
@@ -179,7 +178,7 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         # min–max scale to [0,1000]
 
         min1, max1 = subgraph_edts1.min(), subgraph_edts1.max()
-        span1 = (max1 - min1).clamp(min=1e-6)      # avoid /0
+        span1 = (max1 - min1).clamp(min=1e-6)      
         subgraph_edts1 = ((subgraph_edts1 - min1) / span1) * 1000
 
         min2, max2 = subgraph_edts2.min(), subgraph_edts2.max()

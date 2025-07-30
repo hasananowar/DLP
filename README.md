@@ -25,10 +25,10 @@ The following libraries and frameworks are required to run the code. Make sure t
 pip install -r requirements.txt
 ```
 
-#### Generate edge from 3D coordinates of atoms
+#### Generate edge from time-stamped 3D coordinates of atoms
 
 ```shell
-python gen_data.ipynb
+python gen_data.py --raw_data HB1000frames.csv
 ```
 
 #### Compile C++ sampler 

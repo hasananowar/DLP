@@ -27,6 +27,7 @@ __pycache__/
 train_new.py
 dual_link_pred_train_utils_new.py
 test.ipynb
+gen_data.ipynb
 
 # dotenv
 .env

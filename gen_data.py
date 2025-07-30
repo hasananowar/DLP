@@ -23,7 +23,7 @@ parser = argparse.ArgumentParser(
     description="Generate processed edge & node data from a raw CSV"
 )
 parser.add_argument(
-    '--input',
+    '--raw_data',
     type=str,
     default="HB1000frames.csv",
     help="path to the raw CSV"
@@ -33,9 +33,9 @@ args = parser.parse_args()
 
 # Load DataFrame with columns X, Y, Z, Atom_Name, Residue_Name, Residue_ID, Atom_Type, and Timeframe
 
-if not os.path.exists(args.input):
-    raise FileNotFoundError(f"File not found: {args.input_csv}")
-df = pd.read_csv(args.input)
+if not os.path.exists(args.raw_data):
+    raise FileNotFoundError(f"File not found: {args.raw_data}")
+df = pd.read_csv(args.raw_data)
 df.rename(columns={"Timeframe": "time"}, inplace=True)
 df["time"] -= df["time"].min()
 df["elem"] = df.apply(lambda r: f"{r['Atom_Name']}_{r['Residue_ID']}", axis=1)

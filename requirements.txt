@@ -35,12 +35,13 @@ seaborn==0.13.2
 six==1.17.0
 sympy==1.12
 threadpoolctl==3.6.0
-torch==1.13.0+cu116
-torch-cluster==1.6.1+pt113cu116
-torch-geometric==2.6.1
+torch==1.13.0+cu116 -f https://download.pytorch.org/whl/torch_stable.html
+torch-cluster==1.6.1
 torch-scatter==2.1.1+pt113cu116
 torch-sparse==0.6.17+pt113cu116
-torch-spline-conv==1.2.2+pt113cu116
+torch-cluster==1.6.1+pt113cu116 
+torch-spline-conv==1.2.2+pt113cu116 -f https://data.pyg.org/whl/torch-1.13.0+cu116.html
+torch-geometric
 torchmetrics==0.11.0
 tqdm==4.67.1
 typing_extensions==4.11.0

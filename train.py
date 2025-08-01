@@ -277,10 +277,10 @@ if __name__ == "__main__":
 
     # Set specific arguments related to graph structure and feature usage
     args.use_graph_structure = True
-    args.ignore_node_feats = True  # We only use graph structure
-    # args.use_onehot_node_feats = True # Use node features
+    # args.ignore_node_feats = True  # We only use graph structure
+    args.use_onehot_node_feats = True # Use node features
     # args.use_type_feats = True     # Type encoding
-    # args.use_pair_index = True     # Pair encoding
+    args.use_pair_index = True     # Pair encoding
     args.use_cached_subgraph = True
 
     print(args)

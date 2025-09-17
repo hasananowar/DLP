@@ -337,6 +337,9 @@ class Patch_Encoding(nn.Module):
 
 
 
+#############################################
+# Persistent node memory (relation-aware)
+#############################################
 class NodeMemory(nn.Module):
     def __init__(self, num_nodes: int, mem_dim: int, init="xavier"):
         super().__init__()
@@ -350,7 +353,7 @@ class NodeMemory(nn.Module):
         return self.memory[node_ids]
 
     @torch.no_grad()
-    def ema_update(self, node_ids: torch.Tensor, new_states: torch.Tensor, alpha: float = 0.5):
+    def ema_update(self, node_ids: torch.Tensor, new_states: torch.Tensor, alpha: float):
         if node_ids.numel() == 0:
             return
         self.memory.data[node_ids] = alpha * self.memory.data[node_ids] + (1 - alpha) * new_states.detach()
@@ -359,24 +362,32 @@ class NodeMemory(nn.Module):
 Dual Edge predictor
 """
 class EdgePredictor_per_node(nn.Module):
-    def __init__(self, dim_in: int, dim_hidden: int):
+    def __init__(self, dim_in_time, dim_in_node, predict_class):
         super().__init__()
+
+        self.dim_in_time = dim_in_time
+        self.dim_in_node = dim_in_node
+
+        # 2-layer MLP on hu || hv || hw
         self.mlp = nn.Sequential(
-            nn.Linear(dim_in * 3, dim_hidden),
-            nn.ReLU(inplace=True),
-            nn.Linear(dim_hidden, 1)
+            nn.Linear(3 * (dim_in_time + dim_in_node), 100),
+            nn.ReLU(),
+            nn.Linear(100, predict_class)
         )
+        self.reset_parameters()
 
     def reset_parameters(self):
         for layer in self.mlp:
             if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
-                nn.init.zeros_(layer.bias)
+                layer.reset_parameters()
 
     def forward(self, h, neg_samples=1, src_ids1=None, src_ids2=None):
         # h is concatenated [6*num_edge, D]
         D = h.shape[1]
         num_edge = h.shape[0] // (2 * neg_samples + 4)
+
+        src_ids1 = src_ids1[:num_edge]
+        src_ids2 = src_ids2[:num_edge]
 
         # unpack by slicing
         h_src1      = h[:num_edge]
@@ -395,6 +406,7 @@ class EdgePredictor_per_node(nn.Module):
                 idx1.append(i)
                 idx2.append(j)
 
+
         if len(idx1) == 0:
             device = h.device
             return torch.empty(0,1,device=device), torch.empty(0,1,device=device)
@@ -406,12 +418,11 @@ class EdgePredictor_per_node(nn.Module):
         h_src_combined = h_src1[idx1] + h_src2[idx2]
         h_pos_dst1_a   = h_pos_dst1[idx1]
         h_pos_dst2_a   = h_pos_dst2[idx2]
-        h_pos_edge     = torch.cat([h_src_combined, h_pos_dst1_a, h_pos_dst2_a], dim=-1)
-        pred_pos       = self.mlp(h_pos_edge)
+        h_pos_edge     = self.mlp(torch.cat([h_src_combined, h_pos_dst1_a, h_pos_dst2_a], dim=-1))
 
         # negatives
         if neg_samples <= 0:
-            return pred_pos, torch.empty(0,1,device=h.device)
+            return h_pos_edge, torch.empty(0,1,device=h.device)
 
         rows1, rows2 = [], []
         for i in idx1.tolist():
@@ -424,20 +435,74 @@ class EdgePredictor_per_node(nn.Module):
         rows1 = torch.as_tensor(rows1, dtype=torch.long, device=h.device)
         rows2 = torch.as_tensor(rows2, dtype=torch.long, device=h.device)
 
+        # gather corresponding negatives
         h_neg_dst1_a = h_neg_dst1.index_select(0, rows1)
         h_neg_dst2_a = h_neg_dst2.index_select(0, rows2)
 
         K = idx1.size(0)
         h_src_rep = h_src_combined.unsqueeze(1).expand(K, neg_samples, D).reshape(K*neg_samples, D)
 
-        h_neg_edge1 = torch.cat([h_src_rep, h_neg_dst1_a,
-                                 h_pos_dst2_a.unsqueeze(1).expand(K, neg_samples, D).reshape(-1, D)], dim=-1)
-        h_neg_edge2 = torch.cat([h_src_rep,
-                                 h_pos_dst1_a.unsqueeze(1).expand(K, neg_samples, D).reshape(-1, D),
-                                 h_neg_dst2_a], dim=-1)
+        h_neg_edge1 = torch.cat([
+            h_src_rep,
+            h_neg_dst1_a,
+            h_pos_dst2_a.unsqueeze(1).expand(K, neg_samples, D).reshape(-1, D)
+        ], dim=-1)
 
-        pred_neg = torch.cat([self.mlp(h_neg_edge1), self.mlp(h_neg_edge2)], dim=0)
-        return pred_pos, pred_neg
+        # Case 2: [src, pos1, neg2]
+        h_neg_edge2 = torch.cat([
+            h_src_rep,
+            h_pos_dst1_a.unsqueeze(1).expand(K, neg_samples, D).reshape(-1, D),
+            h_neg_dst2_a
+        ], dim=-1)
+
+        # Case 3: [src, neg1, neg2]
+        h_neg_edge3 = torch.cat([
+            h_src_rep,
+            h_neg_dst1_a,
+            h_neg_dst2_a
+        ], dim=-1)
+
+
+        print("src_ids1.shape:", len(src_ids1), "src_ids2.shape:", len(src_ids2))
+        print("h.shape[0]:", h.shape[0], "neg_samples:", neg_samples, "num_edge:", num_edge)
+
+        print("rows1.max(), rows2.max():", max(rows1).item() if len(rows1)>0 else None, 
+                                        max(rows2).item() if len(rows2)>0 else None)
+        print("h_pos_dst1.shape:",h_pos_dst1_a.shape) 
+        print("h_pos_dst2.shape:",h_pos_dst2_a.shape) 
+
+        print("h_neg_dst1.shape:", h_neg_dst1_a.shape)
+        print("h_neg_dst2.shape:", h_neg_dst2_a.shape)
+        print("Expected neg size:", h_neg_dst1.size(0), h_neg_dst2.size(0))
+        print("h_neg_edge1.shape:", h_neg_edge1.shape)
+        print("h_neg_edge2.shape:", h_neg_edge2.shape)
+        print("h_neg_edge3.shape:", h_neg_edge3.shape)
+    
+
+        # Apply MLP to all negative cases
+        h_neg_edge_all = torch.cat([
+            self.mlp(h_neg_edge1),
+            self.mlp(h_neg_edge2),
+            self.mlp(h_neg_edge3)
+        ], dim=0)
+
+
+        print("h_pos_edge.shape:", h_pos_edge.shape)
+        print("h_neg_edge.shape:", h_neg_edge_all.shape)
+
+        num_pos = h_pos_edge.size(0)
+        num_neg = h_neg_edge_all.size(0)
+
+
+        # Undersampling for positives and negatives Class Balance
+        if num_neg > num_pos:
+            perm = torch.randperm(num_neg)
+            h_neg_edge = h_neg_edge_all[perm][:num_pos]
+        else:
+            h_neg_edge = h_neg_edge_all
+
+        return h_pos_edge, h_neg_edge
+    
 
 
 class Dual_Interface(nn.Module):
@@ -493,3 +558,4 @@ class Dual_Interface(nn.Module):
         pred_pos, pred_neg = self.edge_predictor(x, neg_samples=neg_samples,
                                                  src_ids1=src_ids1, src_ids2=src_ids2)
         return pred_pos, pred_neg
+

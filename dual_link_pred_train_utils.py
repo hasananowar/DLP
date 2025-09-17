@@ -446,13 +446,13 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'lowest loss': low_loss,
         'Total train time': user_train_total_time
     }
-    save_result_folder = Path("results/pair_onehot_results") / args.data
-    save_result_folder.mkdir(parents=True, exist_ok=True)
-    save_result_path = save_result_folder / f"node{args.use_onehot_node_feats}_pair{args.use_pair_index}_type{args.use_type_feats}_results.json"
-    with open(save_result_path, "w") as f:
-        json.dump(results, f, indent=2)
+    # save_result_folder = Path("results/pair_onehot_results") / args.data
+    # save_result_folder.mkdir(parents=True, exist_ok=True)
+    # save_result_path = save_result_folder / f"node{args.use_onehot_node_feats}_pair{args.use_pair_index}_type{args.use_type_feats}_results.json"
+    # with open(save_result_path, "w") as f:
+    #     json.dump(results, f, indent=2)
 
-    print(f"Results written to {save_result_path}")
+    # print(f"Results written to {save_result_path}")
     
     return best_auc_model
 

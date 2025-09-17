@@ -222,6 +222,16 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
                 torch.tensor(all_inds1 + all_inds2, dtype=torch.long, device=args.device),  
                 torch.tensor(list(subgraph_edge_type), dtype=torch.long, device=args.device)]
         
+            # Add source node ID tensors from both datasets
+        if 'root_nodes' not in subgraph_data1 or 'root_nodes' not in subgraph_data2:
+            raise KeyError("Both subgraph_data1 and subgraph_data2 must include 'root_nodes'")
+
+        src_ids1_tensor = torch.as_tensor(subgraph_data1['root_nodes'], dtype=torch.long, device=args.device)
+        src_ids2_tensor = torch.as_tensor(subgraph_data2['root_nodes'], dtype=torch.long, device=args.device)
+
+        inputs.append(src_ids1_tensor)
+        inputs.append(src_ids2_tensor)
+            
         start_time = time.time()
         
         # Forward pass through the model

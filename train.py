@@ -12,9 +12,7 @@ import random
 ####################################################################
 ####################################################################
 
-
 def print_model_info(model):
-    # print(model)
     parameters = filter(lambda p: p.requires_grad, model.parameters())
     parameters = sum([np.prod(p.size()) for p in parameters])
     print('Trainable Parameters: %d' % parameters)
@@ -76,7 +74,6 @@ def load_feat(d):
         if node_feats.dtype == torch.bool:
             node_feats = node_feats.type(torch.float32)
 
-
     edge_feats1 = None
     edge_feats2 = None
     if os.path.exists('DATA/{}/edge_features.pt'.format(d)):
@@ -88,13 +85,6 @@ def load_feat(d):
 def load_graph(d):
     """
     Load graph and edge list data from the specified directory.
-
-    Parameters:
-    - d (str): Base directory name containing graph and edge files.
-
-    Returns:
-    - g1, df1: First graph and its edge list data.
-    - g2, df2: Second graph and its edge list data.
     """
     df1 = pd.read_csv(f'DATA/{d}/edges1.csv')
     g1 = np.load(f'DATA/{d}/edges1.npz')
@@ -131,19 +121,16 @@ def load_all_data(args):
     
     if args.use_onehot_node_feats:
         print('>>> Use one-hot node features')
-
         num_classes = int(node_feats.max().item())+1  
         node_feats = torch.nn.functional.one_hot(node_feats.to(torch.int64).squeeze(), num_classes=num_classes)
         node_feats = node_feats.to(torch.float32)
         node_feat_dims = node_feats.size(1)
-
         print('One-hot node feature dim =', (node_feats.shape))
     
     if args.ignore_node_feats:
         print('>>> Ignore node features')
         node_feats = None
         node_feat_dims = 0
-
 
     if args.use_pair_index:
         num_pair_index = max(df1['dst_idx'].max(), df2['dst_idx'].max()) + 1 
@@ -158,15 +145,12 @@ def load_all_data(args):
         #################### 
         pair_diff1 = torch.abs(pair_feats1 - pair_feats2)   
         pair_mul1 = pair_feats1 * pair_feats2              
-
         pair_diff2 = torch.abs(pair_feats2 - pair_feats1)
         pair_mul2 = pair_feats2 * pair_feats1
 
         pair_feats_combined1 = torch.cat([pair_diff1, pair_mul1], dim=1)
         pair_feats_combined2 = torch.cat([pair_diff2, pair_mul2], dim=1)
-
         ####################
-
         print('Pair embedding feature dim 1: %d, feature dim 2: %d' % (pair_feats_combined1.size(1), pair_feats_combined2.size(1)))
 
     if args.use_type_feats:
@@ -182,35 +166,23 @@ def load_all_data(args):
 
         print('Type feature dim 1: %d, type feature dim 2: %d' % (type_feats1_dims, type_feats2_dims))
 
-    
     if args.use_type_feats and args.use_pair_index:
-        # Concatenate type features and pair features along dimension 1.
         edge_feats1 = torch.cat([type_feats1, pair_feats1], dim=1)
         edge_feats2 = torch.cat([type_feats2, pair_feats2], dim=1)
-
         edge_feat1_dims = edge_feats1.size(1)
         edge_feat2_dims = edge_feats2.size(1)
-        
         print('Final Edge 1 feat dim: %d, Final Edge 2 feat dim: %d' % (edge_feat1_dims, edge_feat2_dims))
-        
     elif args.use_type_feats and not args.use_pair_index:
-        # Use only type features.
         edge_feats1 = type_feats1
         edge_feats2 = type_feats2
-
         edge_feat1_dims = edge_feats1.size(1)
         edge_feat2_dims = edge_feats2.size(1)
-        
         print('Final Edge 1 feat dim: %d, Final Edge 2 feat dim: %d' % (edge_feat1_dims, edge_feat2_dims))
-        
     elif args.use_pair_index and not args.use_type_feats:
-        # Use only pair index features.
         edge_feats1 = pair_feats_combined1
         edge_feats2 = pair_feats_combined2
-
         edge_feat1_dims = edge_feats1.size(1)
         edge_feat2_dims = edge_feats2.size(1)
-        
         print('Final Edge 1 feat dim: %d, Final Edge 2 feat dim: %d' % (edge_feat1_dims, edge_feat2_dims))
 
     # Data leakage check 
@@ -238,10 +210,12 @@ def load_model_dual(args):
         'dim_in_time': args.time_dims,
         'dim_in_node': args.node_feat_dims,
         'predict_class': 1 if not args.predict_class else args.num_edgeType + 1,
+        # the predictor's input hidden dim is args.hidden_dims; its MLP expects 3*hidden
+        'dim_in': args.hidden_dims,         # used by EdgePredictor_per_node ctor
+        'dim_hidden': args.hidden_dims
     }
 
     if args.model == 'DLP':
-
         from model import Dual_Interface as DLP_Interface
         from dual_link_pred_train_utils import link_pred_train_dual
 
@@ -257,15 +231,18 @@ def load_model_dual(args):
             'window_size'     : args.window_size,
             'use_single_layer' : False
         }  
-    
     else:
-        raise NotImplementedError("Model {} is not implemented.".format(args.model))
-    
-    model = DLP_Interface(mixer_configs, edge_predictor_configs)
+        raise NotImplementedError(f"Model {args.model} is not implemented.")
+
+    # === NEW: memory-aware interface args ===
+    # num_nodes for memory table: we assume node IDs are consistent across datasets
+    num_nodes = max(args.num_nodes1, args.num_nodes2)
+    mem_dim = args.hidden_dims
+
+    model = DLP_Interface(mixer_configs, edge_predictor_configs, num_nodes=num_nodes, mem_dim=mem_dim)
+
     for k, v in model.named_parameters():
         print(k, v.requires_grad)
-
-    # print_model_info(model)
 
     return model, args, link_pred_train_dual
         
@@ -277,10 +254,10 @@ if __name__ == "__main__":
 
     # Set specific arguments related to graph structure and feature usage
     args.use_graph_structure = True
-    # args.ignore_node_feats = True  # We only use graph structure
-    args.use_onehot_node_feats = True # Use node features
+    args.ignore_node_feats = True  # We only use graph structure
+    # args.use_onehot_node_feats = True # Use node features
     # args.use_type_feats = True     # Type encoding
-    args.use_pair_index = True     # Pair encoding
+    # args.use_pair_index = True     # Pair encoding
     args.use_cached_subgraph = True
 
     print(args)
@@ -297,7 +274,7 @@ if __name__ == "__main__":
     node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
         
     ###################################################
-    # Load model
+    # Load model (now passes num_nodes & mem_dim for NodeMemory)
     model, args, link_pred_train_dual = load_model_dual(args)
 
     ###################################################

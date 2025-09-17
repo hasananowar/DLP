@@ -23,6 +23,7 @@ __pycache__/
 *.pyd
 *.so
 *.sh
+*.sbatch
 
 train_new.py
 dual_link_pred_train_utils_new.py

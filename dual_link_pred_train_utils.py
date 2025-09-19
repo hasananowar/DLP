@@ -275,9 +275,10 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
 
     # For validation mode, find the best threshold only once
     if mode == 'valid':
-        val_preds  = torch.cat(all_val_preds).detach().cpu().tolist()   
-        val_labels = torch.cat(all_val_labels).detach().cpu().tolist()  
-        val_probs = [1.0 / (1.0 + math.exp(-p)) for p in val_preds]
+        val_preds  = torch.cat(all_val_preds).view(-1).detach().cpu()
+        val_labels = torch.cat(all_val_labels).view(-1).detach().cpu()
+
+        val_probs = torch.sigmoid(val_preds).tolist()
 
         best_tau, best_f1 = 0.5, -1.0
         for τ in np.linspace(0.0, 1.0, 101):

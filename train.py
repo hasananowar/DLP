@@ -50,6 +50,8 @@ def get_args():
     parser.add_argument('--use_onehot_node_feats', action='store_true')
     parser.add_argument('--use_type_feats', action='store_true')
     parser.add_argument('--use_pair_index', action='store_true')
+    parser.add_argument('--no_memory', action='store_true', help='Disable persistent node memory')
+    parser.add_argument('--shared_memory', action='store_true', help='single shared memory')
 
     parser.add_argument('--use_graph_structure', action='store_true')
     parser.add_argument('--structure_time_gap', type=int, default=2000)
@@ -213,7 +215,7 @@ def load_model_dual(args):
     }
 
     if args.model == 'DLP':
-        from model import Dual_Interface as DLP_Interface
+        from model import Dual_Interface
         from dual_link_pred_train_utils import link_pred_train_dual
 
         mixer_configs = {
@@ -231,12 +233,18 @@ def load_model_dual(args):
     else:
         raise NotImplementedError(f"Model {args.model} is not implemented.")
 
-    # === NEW: memory-aware interface args ===
+    # === memory-aware interface args ===
     # num_nodes for memory table: we assume node IDs are consistent across datasets
     num_nodes = max(args.num_nodes1, args.num_nodes2)
-    mem_dim = args.hidden_dims
 
-    model = DLP_Interface(mixer_configs, edge_predictor_configs, num_nodes=num_nodes, mem_dim=mem_dim)
+    model = Dual_Interface(
+    mixer_configs,
+    edge_predictor_configs,
+    num_nodes=args.num_nodes1,
+    mem_dim=args.hidden_dims,
+    use_memory=not args.no_memory,
+    shared_memory=args.shared_memory
+)
 
     for k, v in model.named_parameters():
         print(k, v.requires_grad)
@@ -251,8 +259,8 @@ if __name__ == "__main__":
 
     # Set specific arguments related to graph structure and feature usage
     args.use_graph_structure = True
-    # args.ignore_node_feats = True  # We only use graph structure
-    args.use_onehot_node_feats = True # Use node features
+    args.ignore_node_feats = True  # We only use graph structure
+    # args.use_onehot_node_feats = True # Use node features
     # args.use_type_feats = True     # Type encoding
     args.use_pair_index = True     # Pair encoding
     args.use_cached_subgraph = True
@@ -271,7 +279,7 @@ if __name__ == "__main__":
     node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
         
     ###################################################
-    # Load model (now passes num_nodes & mem_dim for NodeMemory)
+    # Load model
     model, args, link_pred_train_dual = load_model_dual(args)
 
     ###################################################

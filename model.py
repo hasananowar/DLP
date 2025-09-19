@@ -330,15 +330,8 @@ class Patch_Encoding(nn.Module):
         x = self.mlp_head(x)
         return x
     
-
-
-################################################################################################
-################################################################################################
-
-
-
 #############################################
-# Persistent node memory (relation-aware)
+# Persistent node memory
 #############################################
 class NodeMemory(nn.Module):
     def __init__(self, num_nodes: int, mem_dim: int, init="xavier"):
@@ -353,173 +346,160 @@ class NodeMemory(nn.Module):
         return self.memory[node_ids]
 
     @torch.no_grad()
-    def ema_update(self, node_ids: torch.Tensor, new_states: torch.Tensor, alpha: float):
+    def ema_update(self, node_ids: torch.Tensor, new_states: torch.Tensor, alpha: float = 0.5):
         if node_ids.numel() == 0:
             return
         self.memory.data[node_ids] = alpha * self.memory.data[node_ids] + (1 - alpha) * new_states.detach()
 
-"""
-Dual Edge predictor
-"""
+
+#############################################
+# Dual edge predictor (ID-aligned; splits true/false/neg)
+#############################################
 class EdgePredictor_per_node(nn.Module):
-    def __init__(self, dim_in_time, dim_in_node, predict_class):
+    def __init__(self, dim_in: int, dim_hidden: int = 100):
+        """
+        dim_in: runtime embedding size D for each h_* vector (encoder out [+ node feats if used])
+        We score MLP([h_src_combined || h_pos_dst1 || h_pos_dst2]) -> 1 logit
+        """
         super().__init__()
-
-        self.dim_in_time = dim_in_time
-        self.dim_in_node = dim_in_node
-
-        # 2-layer MLP on hu || hv || hw
         self.mlp = nn.Sequential(
-            nn.Linear(3 * (dim_in_time + dim_in_node), 100),
-            nn.ReLU(),
-            nn.Linear(100, predict_class)
+            nn.Linear(dim_in * 3, dim_hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(dim_hidden, 1)
         )
         self.reset_parameters()
 
     def reset_parameters(self):
         for layer in self.mlp:
             if isinstance(layer, nn.Linear):
-                layer.reset_parameters()
+                nn.init.xavier_uniform_(layer.weight)
+                nn.init.zeros_(layer.bias)
 
-    def forward(self, h, neg_samples=1, src_ids1=None, src_ids2=None):
-        # h is concatenated [6*num_edge, D]
+    def forward(self, h, pos_edge_label, neg_samples=1, src_ids1=None, src_ids2=None):
+        """
+        Returns:
+          pred_true  : logits for aligned pairs with label==1
+          pred_false : logits for aligned pairs with label==0
+          pred_neg   : logits for sampled negatives
+          idx1, idx2 : alignment indices (for memory update)
+        Layout of h (unchanged from your pipeline):
+          [ src1 | pos1 | neg1 | src2 | pos2 | neg2 ]
+        """
         D = h.shape[1]
         num_edge = h.shape[0] // (2 * neg_samples + 4)
 
-        src_ids1 = src_ids1[:num_edge]
-        src_ids2 = src_ids2[:num_edge]
-
-        # unpack by slicing
+        # --- slices ---
         h_src1      = h[:num_edge]
         h_pos_dst1  = h[num_edge:2*num_edge]
-        h_neg_dst1  = h[2*num_edge:2*num_edge+num_edge*neg_samples]
-        h_src2      = h[2*num_edge+num_edge*neg_samples:3*num_edge+num_edge*neg_samples]
-        h_pos_dst2  = h[3*num_edge+num_edge*neg_samples:4*num_edge+num_edge*neg_samples]
-        h_neg_dst2  = h[4*num_edge+num_edge*neg_samples:]
+        h_neg_dst1  = h[2*num_edge:2*num_edge + num_edge*neg_samples]
 
-        # align by node IDs
-        id2_to_idx = {int(nid): j for j, nid in enumerate(src_ids2.tolist())}
-        idx1, idx2 = [], []
-        for i, nid in enumerate(src_ids1.tolist()):
+        base2       = 2*num_edge + num_edge*neg_samples
+        h_src2      = h[base2 : base2 + num_edge]
+        h_pos_dst2  = h[base2 + num_edge : base2 + 2*num_edge]
+        h_neg_dst2  = h[base2 + 2*num_edge : ]
+
+        # --- align src IDs across datasets ---
+        id2_to_idx = {int(nid): j for j, nid in enumerate(src_ids2[:num_edge].tolist())}
+        idx1_list, idx2_list = [], []
+        for i, nid in enumerate(src_ids1[:num_edge].tolist()):
             j = id2_to_idx.get(int(nid))
             if j is not None:
-                idx1.append(i)
-                idx2.append(j)
+                idx1_list.append(i)
+                idx2_list.append(j)
+
+        if len(idx1_list) == 0:
+            dev = h.device
+            empty = torch.empty(0, 1, device=dev)
+            return empty, empty, empty, torch.empty(0, dtype=torch.long, device=dev), torch.empty(0, dtype=torch.long, device=dev)
+
+        idx1 = torch.as_tensor(idx1_list, dtype=torch.long, device=h.device)
+        idx2 = torch.as_tensor(idx2_list, dtype=torch.long, device=h.device)
+
+        # --- positives (aligned) ---
+        h_src_combined = h_src1.index_select(0, idx1) + h_src2.index_select(0, idx2)
+        h_pos_dst1_a   = h_pos_dst1.index_select(0, idx1)
+        h_pos_dst2_a   = h_pos_dst2.index_select(0, idx2)
+
+        h_pos_edge = torch.cat([h_src_combined, h_pos_dst1_a, h_pos_dst2_a], dim=-1)
+        pred_pos   = self.mlp(h_pos_edge)  # logits for all aligned pairs
+
+        # split by ground-truth label
+        y_pos = pos_edge_label.index_select(0, idx1).view(-1, 1)
+        mask_true  = (y_pos == 1)
+        mask_false = (y_pos == 0)
+        pred_true  = pred_pos[mask_true].view(-1, 1)
+        pred_false = pred_pos[mask_false].view(-1, 1)
+
+        # --- negatives (3 cases) ---
+        pred_neg = torch.empty(0, 1, device=h.device)
+        if neg_samples > 0 and h_neg_dst1.numel() > 0 and h_neg_dst2.numel() > 0:
+            rows1, rows2 = [], []
+            for i in idx1.tolist():
+                rows1.extend(range(i*neg_samples, (i+1)*neg_samples))
+            for j in idx2.tolist():
+                rows2.extend(range(j*neg_samples, (j+1)*neg_samples))
+            rows1 = torch.as_tensor(rows1, dtype=torch.long, device=h.device)
+            rows2 = torch.as_tensor(rows2, dtype=torch.long, device=h.device)
+
+            h_neg_dst1_a = h_neg_dst1.index_select(0, rows1)  # [K*neg, D]
+            h_neg_dst2_a = h_neg_dst2.index_select(0, rows2)  # [K*neg, D]
+
+            K = idx1.size(0)
+            h_src_rep  = h_src_combined.unsqueeze(1).expand(K, neg_samples, D).reshape(K*neg_samples, D)
+            h_pos1_rep = h_pos_dst1_a.unsqueeze(1).expand(K, neg_samples, D).reshape(-1, D)
+            h_pos2_rep = h_pos_dst2_a.unsqueeze(1).expand(K, neg_samples, D).reshape(-1, D)
+
+            h_neg_edge1 = torch.cat([h_src_rep, h_neg_dst1_a, h_pos2_rep], dim=-1)  # [src, neg1, pos2]
+            h_neg_edge2 = torch.cat([h_src_rep, h_pos1_rep, h_neg_dst2_a], dim=-1)  # [src, pos1, neg2]
+            h_neg_edge3 = torch.cat([h_src_rep, h_neg_dst1_a, h_neg_dst2_a], dim=-1) # [src, neg1, neg2]
+
+            pred_neg = torch.cat([self.mlp(h_neg_edge1), self.mlp(h_neg_edge2), self.mlp(h_neg_edge3)], dim=0)
+
+        return pred_true, pred_false, pred_neg, idx1, idx2
 
 
-        if len(idx1) == 0:
-            device = h.device
-            return torch.empty(0,1,device=device), torch.empty(0,1,device=device)
-
-        idx1 = torch.as_tensor(idx1, dtype=torch.long, device=h.device)
-        idx2 = torch.as_tensor(idx2, dtype=torch.long, device=h.device)
-
-        # positives
-        h_src_combined = h_src1[idx1] + h_src2[idx2]
-        h_pos_dst1_a   = h_pos_dst1[idx1]
-        h_pos_dst2_a   = h_pos_dst2[idx2]
-        h_pos_edge     = self.mlp(torch.cat([h_src_combined, h_pos_dst1_a, h_pos_dst2_a], dim=-1))
-
-        # negatives
-        if neg_samples <= 0:
-            return h_pos_edge, torch.empty(0,1,device=h.device)
-
-        rows1, rows2 = [], []
-        for i in idx1.tolist():
-            base = i * neg_samples
-            rows1.extend(list(range(base, base+neg_samples)))
-        for j in idx2.tolist():
-            base = j * neg_samples
-            rows2.extend(list(range(base, base+neg_samples)))
-
-        rows1 = torch.as_tensor(rows1, dtype=torch.long, device=h.device)
-        rows2 = torch.as_tensor(rows2, dtype=torch.long, device=h.device)
-
-        # gather corresponding negatives
-        h_neg_dst1_a = h_neg_dst1.index_select(0, rows1)
-        h_neg_dst2_a = h_neg_dst2.index_select(0, rows2)
-
-        K = idx1.size(0)
-        h_src_rep = h_src_combined.unsqueeze(1).expand(K, neg_samples, D).reshape(K*neg_samples, D)
-
-        h_neg_edge1 = torch.cat([
-            h_src_rep,
-            h_neg_dst1_a,
-            h_pos_dst2_a.unsqueeze(1).expand(K, neg_samples, D).reshape(-1, D)
-        ], dim=-1)
-
-        # Case 2: [src, pos1, neg2]
-        h_neg_edge2 = torch.cat([
-            h_src_rep,
-            h_pos_dst1_a.unsqueeze(1).expand(K, neg_samples, D).reshape(-1, D),
-            h_neg_dst2_a
-        ], dim=-1)
-
-        # Case 3: [src, neg1, neg2]
-        h_neg_edge3 = torch.cat([
-            h_src_rep,
-            h_neg_dst1_a,
-            h_neg_dst2_a
-        ], dim=-1)
-
-
-        print("src_ids1.shape:", len(src_ids1), "src_ids2.shape:", len(src_ids2))
-        print("h.shape[0]:", h.shape[0], "neg_samples:", neg_samples, "num_edge:", num_edge)
-
-        print("rows1.max(), rows2.max():", max(rows1).item() if len(rows1)>0 else None, 
-                                        max(rows2).item() if len(rows2)>0 else None)
-        print("h_pos_dst1.shape:",h_pos_dst1_a.shape) 
-        print("h_pos_dst2.shape:",h_pos_dst2_a.shape) 
-
-        print("h_neg_dst1.shape:", h_neg_dst1_a.shape)
-        print("h_neg_dst2.shape:", h_neg_dst2_a.shape)
-        print("Expected neg size:", h_neg_dst1.size(0), h_neg_dst2.size(0))
-        print("h_neg_edge1.shape:", h_neg_edge1.shape)
-        print("h_neg_edge2.shape:", h_neg_edge2.shape)
-        print("h_neg_edge3.shape:", h_neg_edge3.shape)
-    
-
-        # Apply MLP to all negative cases
-        h_neg_edge_all = torch.cat([
-            self.mlp(h_neg_edge1),
-            self.mlp(h_neg_edge2),
-            self.mlp(h_neg_edge3)
-        ], dim=0)
-
-
-        print("h_pos_edge.shape:", h_pos_edge.shape)
-        print("h_neg_edge.shape:", h_neg_edge_all.shape)
-
-        num_pos = h_pos_edge.size(0)
-        num_neg = h_neg_edge_all.size(0)
-
-
-        # Undersampling for positives and negatives Class Balance
-        if num_neg > num_pos:
-            perm = torch.randperm(num_neg)
-            h_neg_edge = h_neg_edge_all[perm][:num_pos]
-        else:
-            h_neg_edge = h_neg_edge_all
-
-        return h_pos_edge, h_neg_edge
-    
-
-
+#############################################
+# Dual Interface (Transformer + Memory)
+#############################################
 class Dual_Interface(nn.Module):
-    def __init__(self, mlp_mixer_configs, edge_predictor_configs, num_nodes, mem_dim):
+    def __init__(self,
+                 mlp_mixer_configs,
+                 edge_predictor_configs,
+                 num_nodes,
+                 mem_dim,
+                 ema_alpha: float = 0.5,
+                 use_memory: bool = True,
+                 shared_memory: bool = False):
         super(Dual_Interface, self).__init__()
 
+        # keep your original config keys
         self.time_feats_dim = edge_predictor_configs['dim_in_time']
         self.node_feats_dim = edge_predictor_configs['dim_in_node']
 
+        # encoder
         if self.time_feats_dim > 0:
             self.base_model = Patch_Encoding(**mlp_mixer_configs)
 
-        self.edge_predictor = EdgePredictor_per_node(**edge_predictor_configs)
+        # effective embedding dim seen by the predictor
+        self.enc_out = mlp_mixer_configs['out_channels']
+        self.eff_D   = self.enc_out + (self.node_feats_dim if self.node_feats_dim > 0 else 0)
+
+        # predictor
+        self.edge_predictor = EdgePredictor_per_node(dim_in=self.eff_D, dim_hidden=max(100, self.enc_out))
         self.criterion = nn.BCEWithLogitsLoss(reduction='none')
 
-        self.node_memory = NodeMemory(num_nodes, mem_dim)
+        # memory knobs
+        self.use_memory   = use_memory
+        self.shared_memory = shared_memory
+        self.ema_alpha    = ema_alpha
 
+        if self.use_memory:
+            if self.shared_memory:
+                self.node_memory = NodeMemory(num_nodes, self.eff_D)
+            else:
+                # relation-aware (dataset1 vs dataset2)
+                self.node_memory1 = NodeMemory(num_nodes, self.eff_D)
+                self.node_memory2 = NodeMemory(num_nodes, self.eff_D)
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -528,34 +508,94 @@ class Dual_Interface(nn.Module):
         self.edge_predictor.reset_parameters()
 
     def forward(self, model_inputs, neg_samples, node_feats):
-        pos_edge_label = model_inputs[-3].view(-1).float()  # adjust: label is 3rd-from-last
+        # layout: [... base_model inputs ..., pos_edge_label, src_ids1, src_ids2]
+        pos_edge_label = model_inputs[-3].view(-1).float()
         src_ids1, src_ids2 = model_inputs[-2], model_inputs[-1]
-        model_inputs = model_inputs[:-3]
+        base_inputs = model_inputs[:-3]
 
-        pred_pos, pred_neg = self.predict(model_inputs, neg_samples, node_feats, src_ids1, src_ids2)
+        # predict (x_cache returned for memory updates)
+        pred_true, pred_false, pred_neg, idx1, idx2, x_cache = self.predict(
+            base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2
+        )
 
-        pos_preds = pred_pos.view(-1)
-        neg_preds = pred_neg.view(-1)
-        all_pred  = torch.cat([pos_preds, neg_preds], dim=0)
+        # handle empty aligned batch
+        if pred_true.numel() == 0 and pred_false.numel() == 0:
+            device = pos_edge_label.device
+            loss = torch.tensor(0.0, device=device, requires_grad=True)
+            return loss, torch.empty(0, device=device), torch.empty(0, device=device)
 
-        neg_labels = torch.zeros(neg_preds.size(0), dtype=torch.float32, device=all_pred.device)
-        all_edge_label = torch.cat([pos_edge_label[:pos_preds.size(0)], neg_labels], dim=0)
+        # Negative undersampling to balance classes
+        if pred_neg.numel() > 0:
+            target_neg = pred_true.size(0) + pred_false.size(0)
+            if pred_neg.size(0) > target_neg > 0:
+                perm = torch.randperm(pred_neg.size(0), device=pred_neg.device)[:target_neg]
+                pred_neg = pred_neg[perm]
 
-        loss = self.criterion(all_pred, all_edge_label).mean()
-        return loss, all_pred, all_edge_label
+        # Loss per bucket
+        loss_true  = self.criterion(pred_true,  torch.ones_like(pred_true)).mean() if pred_true.numel()  > 0 else 0.0
+        loss_false = self.criterion(pred_false, torch.zeros_like(pred_false)).mean() if pred_false.numel() > 0 else 0.0
+        loss_neg   = self.criterion(pred_neg,   torch.zeros_like(pred_neg)).mean()   if pred_neg.numel()   > 0 else 0.0
+        loss = loss_true + loss_false + loss_neg
 
-    def predict(self, model_inputs, neg_samples, node_feats, src_ids1, src_ids2):
+        all_pred  = torch.cat([pred_true, pred_false, pred_neg], dim=0)
+        all_label = torch.cat([torch.ones_like(pred_true),
+                               torch.zeros_like(pred_false),
+                               torch.zeros_like(pred_neg)], dim=0)
+
+        # Update memory ONLY on true positives
+        if self.use_memory and pred_true.numel() > 0:
+            with torch.no_grad():
+                mask_true = (pos_edge_label.index_select(0, idx1).view(-1, 1) == 1)
+                up_idx1   = idx1[mask_true.view(-1)]
+                up_idx2   = idx2[mask_true.view(-1)]
+
+                num_edge = x_cache.shape[0] // (2 * neg_samples + 4)
+                base2    = 2*num_edge + num_edge*neg_samples
+                h_src1_now = x_cache[:num_edge]
+                h_src2_now = x_cache[base2 : base2 + num_edge]
+
+                if self.shared_memory:
+                    self.node_memory.ema_update(src_ids1.index_select(0, up_idx1),
+                                                h_src1_now.index_select(0, up_idx1),
+                                                alpha=self.ema_alpha)
+                    self.node_memory.ema_update(src_ids2.index_select(0, up_idx2),
+                                                h_src2_now.index_select(0, up_idx2),
+                                                alpha=self.ema_alpha)
+                else:
+                    self.node_memory1.ema_update(src_ids1.index_select(0, up_idx1),
+                                                 h_src1_now.index_select(0, up_idx1),
+                                                 alpha=self.ema_alpha)
+                    self.node_memory2.ema_update(src_ids2.index_select(0, up_idx2),
+                                                 h_src2_now.index_select(0, up_idx2),
+                                                 alpha=self.ema_alpha)
+
+        return loss, all_pred, all_label
+
+    def predict(self, base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2):
+        # encoder
         if self.time_feats_dim > 0 and self.node_feats_dim == 0:
-            x = self.base_model(*model_inputs)
+            x = self.base_model(*base_inputs)
         elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
-            x = self.base_model(*model_inputs)
+            x = self.base_model(*base_inputs)
             x = torch.cat([x, node_feats], dim=1)
         elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
             x = node_feats
         else:
-            raise ValueError('Either time_feats_dim or node_feats_dim must be >0')
+            raise ValueError('Either dim_in_time or dim_in_node must be > 0')
 
-        pred_pos, pred_neg = self.edge_predictor(x, neg_samples=neg_samples,
-                                                 src_ids1=src_ids1, src_ids2=src_ids2)
-        return pred_pos, pred_neg
+        # memory fusion (additive) into source slices
+        num_edge = x.shape[0] // (2 * neg_samples + 4)
+        base2    = 2*num_edge + num_edge*neg_samples
+        if self.use_memory:
+            if self.shared_memory:
+                x[:num_edge]                   += self.node_memory.get(src_ids1[:num_edge])
+                x[base2 : base2 + num_edge]    += self.node_memory.get(src_ids2[:num_edge])
+            else:
+                x[:num_edge]                   += self.node_memory1.get(src_ids1[:num_edge])
+                x[base2 : base2 + num_edge]    += self.node_memory2.get(src_ids2[:num_edge])
 
+        # predictor (splits true/false/neg + returns alignment)
+        pred_true, pred_false, pred_neg, idx1, idx2 = self.edge_predictor(
+            x, pos_edge_label, neg_samples=neg_samples, src_ids1=src_ids1, src_ids2=src_ids2
+        )
+        return pred_true, pred_false, pred_neg, idx1, idx2, x

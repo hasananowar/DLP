@@ -71,7 +71,18 @@ def get_subgraph_sampler(args, g, df, mode):
 ######################################################################################################
 ######################################################################################################
 ######################################################################################################
+
+
 # for small dataset, we can cache each graph
+
+SEED_MAP = {
+    ("edges1", "train"): 0,
+    ("edges1", "valid"): 1,
+    ("edges1", "test"):  2,
+    ("edges2", "train"): 3,
+    ("edges2", "valid"): 4,
+    ("edges2", "test"):  5,
+}
 def pre_compute_subgraphs(args, g, df, mode, input_data):
     ###################################################
     # get cached file_name
@@ -87,7 +98,7 @@ def pre_compute_subgraphs(args, g, df, mode, input_data):
                                                                             args.sampled_num_hops, 
                                                                           args.num_neighbors,input_data))
     ###################################################
-
+    seed = SEED_MAP.get((input_data, mode), 0)
     # try:
     if os.path.exists(fn):
         print(f"Loading cached subgraphs from {fn}")
@@ -98,7 +109,7 @@ def pre_compute_subgraphs(args, g, df, mode, input_data):
         ###################################################
         # for each node, sample its neighbors with the most recent neighbors (sorted) 
         print('Sample subgraphs ... for %s mode'%mode)
-        sampler, neg_link_sampler = get_parallel_sampler(g, args.num_neighbors)
+        sampler, neg_link_sampler = get_parallel_sampler(g, args.num_neighbors, seed=seed)
     
         ###################################################
         # setup modes
@@ -147,19 +158,31 @@ def pre_compute_subgraphs(args, g, df, mode, input_data):
     return subgraph_elabel
 
 
-def get_random_inds(num_subgraph, cached_neg_samples, neg_samples):
-    ###################################################
-    batch_size = num_subgraph // (2+cached_neg_samples)
+# def get_random_inds(num_subgraph, cached_neg_samples, neg_samples):
+#     ###################################################
+#     batch_size = num_subgraph // (2+cached_neg_samples)
+#     pos_src_inds = np.arange(batch_size)
+#     pos_dst_inds = np.arange(batch_size) + batch_size
+#     neg_dst_inds = np.random.randint(low=2, high=2+cached_neg_samples, size=int(batch_size*neg_samples))
+#     neg_dst_inds = batch_size * neg_dst_inds + np.arange(batch_size)
+#     mini_batch_inds = np.concatenate([pos_src_inds, pos_dst_inds, neg_dst_inds]).astype(np.int32)
+#     ###################################################
+
+#     return mini_batch_inds
+
+def get_random_inds(num_subgraph, cached_neg_samples, neg_samples, seed=None):
+    rng = np.random.RandomState(seed) if seed is not None else np.random
+    batch_size = num_subgraph // (2 + cached_neg_samples)
     pos_src_inds = np.arange(batch_size)
     pos_dst_inds = np.arange(batch_size) + batch_size
-    neg_dst_inds = np.random.randint(low=2, high=2+cached_neg_samples, size=int(batch_size*neg_samples))
+    neg_dst_inds = rng.randint(
+        low=2,
+        high=2 + cached_neg_samples,
+        size=int(batch_size * neg_samples)
+    )
     neg_dst_inds = batch_size * neg_dst_inds + np.arange(batch_size)
     mini_batch_inds = np.concatenate([pos_src_inds, pos_dst_inds, neg_dst_inds]).astype(np.int32)
-    ###################################################
-
     return mini_batch_inds
-
-
 
 def check_data_leakage(args, g, df):
     """

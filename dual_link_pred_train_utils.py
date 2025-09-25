@@ -104,8 +104,8 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             subgraph_data_list1 = subgraphs1.all_root_nodes[ind]
             subgraph_data_list2 = subgraphs2.all_root_nodes[ind]
             
-            mini_batch_inds1 = get_random_inds(len(subgraph_data_list1), cached_neg_samples1, neg_samples1)
-            mini_batch_inds2 = get_random_inds(len(subgraph_data_list2), cached_neg_samples2, neg_samples2)
+            mini_batch_inds1 = get_random_inds(len(subgraph_data_list1), cached_neg_samples1, neg_samples1,  seed = 0)
+            mini_batch_inds2 = get_random_inds(len(subgraph_data_list2), cached_neg_samples2, neg_samples2, seed = 1)
             
             subgraph_data1 = subgraphs1.mini_batch(ind, mini_batch_inds1)
             subgraph_data2 = subgraphs2.mini_batch(ind, mini_batch_inds2)
@@ -113,10 +113,10 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         else: # valid + test
             subgraph_data_list1 = subgraphs1[ind]
             subgraph_data_list2 = subgraphs2[ind]
-            
-            mini_batch_inds1 = get_random_inds(len(subgraph_data_list1), cached_neg_samples1, neg_samples1)
-            mini_batch_inds2 = get_random_inds(len(subgraph_data_list2), cached_neg_samples2, neg_samples2)
-            
+
+            mini_batch_inds1 = get_random_inds(len(subgraph_data_list1), cached_neg_samples1, neg_samples1, seed=0)
+            mini_batch_inds2 = get_random_inds(len(subgraph_data_list2), cached_neg_samples2, neg_samples2, seed=1)
+
             subgraph_data1 = [subgraph_data_list1[i] for i in mini_batch_inds1]
             subgraph_data2 = [subgraph_data_list2[i] for i in mini_batch_inds2]
         

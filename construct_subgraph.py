@@ -10,13 +10,14 @@ class NegLinkSampler:
     """
     From https://github.com/amazon-research/tgl/blob/main/sampler.py
     """
-    def __init__(self, num_nodes):
+    def __init__(self, num_nodes, seed=None):
         self.num_nodes = num_nodes
+        self.rng = np.random.default_rng(seed)
 
     def sample(self, n):
-        return np.random.randint(self.num_nodes, size=n)
-    
-def get_parallel_sampler(g, num_neighbors=10):
+        return self.rng.integers(self.num_nodes, size=n)
+
+def get_parallel_sampler(g, num_neighbors=10, seed=None):
     """
     Function wrapper of the C++ sampler (https://github.com/amazon-research/tgl/blob/main/sampler_core.cpp)
     Sample the 1-hop most recent neighbors of each node
@@ -38,7 +39,7 @@ def get_parallel_sampler(g, num_neighbors=10):
     ]
     
     sampler = ParallelSampler(*configs)       
-    neg_link_sampler = NegLinkSampler(g['indptr'].shape[0] - 1)
+    neg_link_sampler = NegLinkSampler(g['indptr'].shape[0] - 1, seed=seed)
     return sampler, neg_link_sampler
     
 ##############################################################################

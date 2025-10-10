@@ -21,7 +21,7 @@ class SubgraphSampler:
         ts = self.all_ts[ind][mini_batch_inds]
         return get_mini_batch(self.sampler, root_nodes, ts, self.sampled_num_hops)
 
-def get_subgraph_sampler(args, g, df, mode):
+def get_subgraph_sampler(args, g, df, mode, input_data):
     ###################################################
     # get cached file_name
     if mode == 'train':
@@ -29,10 +29,16 @@ def get_subgraph_sampler(args, g, df, mode):
     else:
         extra_neg_samples = 1
 
+    SEED_MAP = {
+        ("edges1","train"):0, ("edges1","valid"):1, ("edges1","test"):2,
+        ("edges2","train"):3, ("edges2","valid"):4, ("edges2","test"):5
+    }
+    seed = SEED_MAP.get((input_data, mode), 0)
+
     ###################################################
     # for each node, sample its neighbors with the most recent neighbors (sorted) 
     print('Sample subgraphs ... for %s mode'%mode)
-    sampler, neg_link_sampler = get_parallel_sampler(g, args.num_neighbors)
+    sampler, neg_link_sampler = get_parallel_sampler(g, args.num_neighbors, seed=seed)
 
     ###################################################
     # setup modes
@@ -170,17 +176,13 @@ def pre_compute_subgraphs(args, g, df, mode, input_data):
 
 #     return mini_batch_inds
 
-def get_random_inds(num_subgraph, cached_neg_samples, neg_samples, seed=None):
-    rng = np.random.RandomState(seed) if seed is not None else np.random
+def get_random_inds(num_subgraph, cached_neg_samples, neg_samples, rng=None):
+    rng = rng or np.random.default_rng()  # don’t reseed here
     batch_size = num_subgraph // (2 + cached_neg_samples)
     pos_src_inds = np.arange(batch_size)
     pos_dst_inds = np.arange(batch_size) + batch_size
-    neg_dst_inds = rng.randint(
-        low=2,
-        high=2 + cached_neg_samples,
-        size=int(batch_size * neg_samples)
-    )
-    neg_dst_inds = batch_size * neg_dst_inds + np.arange(batch_size)
+    neg_bins = rng.integers(2, 2 + cached_neg_samples, size=int(batch_size * neg_samples))
+    neg_dst_inds = batch_size * neg_bins + np.arange(batch_size)
     mini_batch_inds = np.concatenate([pos_src_inds, pos_dst_inds, neg_dst_inds]).astype(np.int32)
     return mini_batch_inds
 

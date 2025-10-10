@@ -1,13 +1,20 @@
-import torch
-import numpy as np
 import argparse
 # from utils import set_seed, load_feat, load_graph
 from data_process_utils import check_data_leakage
+import pandas as pd
 
 import os
-import pandas as pd
-import random
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"   
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"     
 
+import torch
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True, warn_only=False)
+
+
+import random
+import numpy as np
 ####################################################################
 ####################################################################
 ####################################################################
@@ -23,7 +30,7 @@ def get_args():
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--epochs', type=int, default=300)
-    parser.add_argument('--max_edges', type=int, default=50)
+    parser.add_argument('--max_edges', type=int, default=50) #200
     parser.add_argument('--num_edgeType', type=int, default=0, help='num of edgeType')
     parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-4)
@@ -35,9 +42,9 @@ def get_args():
     parser.add_argument('--model', type=str, default='DLP') 
     parser.add_argument('--neg_samples', type=int, default=1)
     parser.add_argument('--extra_neg_samples', type=int, default=1)
-    parser.add_argument('--num_neighbors', type=int, default=50)
+    parser.add_argument('--num_neighbors', type=int, default=50) #200
     parser.add_argument('--channel_expansion_factor', type=int, default=1)
-    parser.add_argument('--sampled_num_hops', type=int, default=1)
+    parser.add_argument('--sampled_num_hops', type=int, default=1) #5
     parser.add_argument('--pair_dims', type=int, default=100)
     parser.add_argument('--time_dims', type=int, default=100)
     parser.add_argument('--hidden_dims', type=int, default=100)
@@ -47,8 +54,7 @@ def get_args():
     parser.add_argument('--ignore_node_feats', action='store_true')
     parser.add_argument('--node_feats_as_edge_feats', action='store_true')
     parser.add_argument('--ignore_edge_feats', action='store_true')
-    parser.add_argument('--use_onehot_node_feats', action='store_true')
-    parser.add_argument('--use_type_feats', action='store_true')
+    parser.add_argument('--use_node_feats', action='store_true')
     parser.add_argument('--use_pair_index', action='store_true')
     parser.add_argument('--no_memory', action='store_true', help='Disable persistent node memory')
     parser.add_argument('--shared_memory', action='store_true', help='single shared memory')
@@ -56,8 +62,6 @@ def get_args():
     parser.add_argument('--use_graph_structure', action='store_true')
     parser.add_argument('--structure_time_gap', type=int, default=2000)
     parser.add_argument('--structure_hops', type=int, default=1) 
-
-    parser.add_argument('--use_node_cls', action='store_true')
     parser.add_argument('--use_cached_subgraph', action='store_true')
     parser.add_argument('--early_stop_patience', type=int, default=30)
     return parser.parse_args()
@@ -121,13 +125,13 @@ def load_all_data(args):
     edge_feat1_dims = 0 if edge_feats1 is None else edge_feats1.shape[1]
     edge_feat2_dims = 0 if edge_feats2 is None else edge_feats2.shape[1]
     
-    if args.use_onehot_node_feats:
-        print('>>> Use one-hot node features')
+    if args.use_node_feats:
+        print('>>> Use node features')
         num_classes = int(node_feats.max().item())+1  
         node_feats = torch.nn.functional.one_hot(node_feats.to(torch.int64).squeeze(), num_classes=num_classes)
         node_feats = node_feats.to(torch.float32)
         node_feat_dims = node_feats.size(1)
-        print('One-hot node feature dim =', (node_feats.shape))
+        print('node feature dim =', (node_feats.shape))
     
     if args.ignore_node_feats:
         print('>>> Ignore node features')
@@ -155,32 +159,6 @@ def load_all_data(args):
         ####################
         print('Pair embedding feature dim 1: %d, feature dim 2: %d' % (pair_feats_combined1.size(1), pair_feats_combined2.size(1)))
 
-    if args.use_type_feats:
-        edge_type1 = df1.label.values
-        args.num_edgeType1 = len(set(edge_type1.tolist()))
-        type_feats1 = torch.nn.functional.one_hot(torch.as_tensor(edge_type1, dtype=torch.long),num_classes=args.num_edgeType1)
-        type_feats1_dims = type_feats1.size(1)
-
-        edge_type2 = df2.label.values
-        args.num_edgeType2 = len(set(edge_type2.tolist()))
-        type_feats2 = torch.nn.functional.one_hot(torch.as_tensor(edge_type2, dtype=torch.long),num_classes=args.num_edgeType2)
-        type_feats2_dims = type_feats2.size(1)
-
-        print('Type feature dim 1: %d, type feature dim 2: %d' % (type_feats1_dims, type_feats2_dims))
-
-    if args.use_type_feats and args.use_pair_index:
-        edge_feats1 = torch.cat([type_feats1, pair_feats1], dim=1)
-        edge_feats2 = torch.cat([type_feats2, pair_feats2], dim=1)
-        edge_feat1_dims = edge_feats1.size(1)
-        edge_feat2_dims = edge_feats2.size(1)
-        print('Final Edge 1 feat dim: %d, Final Edge 2 feat dim: %d' % (edge_feat1_dims, edge_feat2_dims))
-    elif args.use_type_feats and not args.use_pair_index:
-        edge_feats1 = type_feats1
-        edge_feats2 = type_feats2
-        edge_feat1_dims = edge_feats1.size(1)
-        edge_feat2_dims = edge_feats2.size(1)
-        print('Final Edge 1 feat dim: %d, Final Edge 2 feat dim: %d' % (edge_feat1_dims, edge_feat2_dims))
-    elif args.use_pair_index and not args.use_type_feats:
         edge_feats1 = pair_feats_combined1
         edge_feats2 = pair_feats_combined2
         edge_feat1_dims = edge_feats1.size(1)
@@ -234,7 +212,7 @@ def load_model_dual(args):
         raise NotImplementedError(f"Model {args.model} is not implemented.")
 
     # === memory-aware interface args ===
-    # num_nodes for memory table: we assume node IDs are consistent across datasets
+    # node IDs are consistent across datasets
     num_nodes = max(args.num_nodes1, args.num_nodes2)
 
     model = Dual_Interface(
@@ -257,12 +235,10 @@ def load_model_dual(args):
 if __name__ == "__main__":
     args = get_args()
 
-    # Set specific arguments related to graph structure and feature usage
     args.use_graph_structure = True
-    args.ignore_node_feats = True  # We only use graph structure
-    # args.use_onehot_node_feats = True # Use node features
-    # args.use_type_feats = True     # Type encoding
-    args.use_pair_index = True     # Pair encoding
+    #args.ignore_node_feats = True  # We only use graph structure
+    # args.use_node_feats = True # Use node features
+    #args.use_pair_index = True     # Pair encoding
     args.use_cached_subgraph = True
 
     print(args)

@@ -23,35 +23,47 @@ from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision, Bin
 from sklearn.preprocessing import MinMaxScaler
 
 
+
+rng1_train = np.random.default_rng(0)  # edges1 (train)
+rng2_train = np.random.default_rng(1)  # edges2 (train)
+
 # F1: need thresholded predictions
 def prepare_preds_for_f1(preds: torch.Tensor, threshold: float):
     return (torch.sigmoid(preds) > threshold).long()
 
-
-def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feats , edge_feats1, edge_feats2, 
+def run_dual(model, optimizer, args,
+             subgraphs1, subgraphs2, df1, df2,
+             node_feats, edge_feats1, edge_feats2,
              MLAUROC, MLAUPRC, MLF1, mode):
     """
     Executes a training or evaluation epoch for dual link prediction tasks.
+    - TRAIN metrics are assumed to live on GPU (args.device)
+    - EVAL (valid/test) metrics are assumed to live on CPU
     """
 
     # For validation only: keep a list of all preds+labels
     all_val_preds = []
     all_val_labels = []
-    # Initialize the best threshold (if not already in args)
     best_threshold = getattr(args, 'best_threshold', 0.5)
-    time_epoch = 0
-    ###################################################
-    # Setup modes
+    time_epoch = 0.0
+
+    # -----------------------------
+    # Mode setup
+    # -----------------------------
     if mode == 'train':
         model.train()
         cur_df1 = df1[:args.train_edge_end]
         cur_df2 = df2[:args.train_edge_end]
         neg_samples1 = args.neg_samples
-        neg_samples2 = args.neg_samples  
+        neg_samples2 = args.neg_samples
         cached_neg_samples1 = args.extra_neg_samples
         cached_neg_samples2 = args.extra_neg_samples
         cur_inds1 = 0
         cur_inds2 = 0
+        # training uses the advancing RNG streams
+        rng1_local = rng1_train
+        rng2_local = rng2_train
+
     elif mode == 'valid':
         model.eval()
         cur_df1 = df1[args.train_edge_end:args.val_edge_end]
@@ -62,6 +74,10 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         cached_neg_samples2 = 1
         cur_inds1 = args.train_edge_end
         cur_inds2 = args.train_edge_end
+        # eval uses fixed RNGs (independent, reproducible every run)
+        rng1_local = np.random.default_rng(4242)
+        rng2_local = np.random.default_rng(4243)
+
     elif mode == 'test':
         model.eval()
         cur_df1 = df1[args.val_edge_end:]
@@ -72,22 +88,24 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         cached_neg_samples2 = 1
         cur_inds1 = args.val_edge_end
         cur_inds2 = args.val_edge_end
+        # test uses fixed RNGs (independent, reproducible every run)
+        rng1_local = np.random.default_rng(4342)
+        rng2_local = np.random.default_rng(4343)
+
     else:
         raise ValueError("Mode should be 'train', 'valid', or 'test'")
-    
-    # Create separate loaders for subgraphs1 and subgraphs2
+
+    # Create loaders and sanity check
     train_loader1 = cur_df1.groupby(cur_df1.index // args.batch_size)
     train_loader2 = cur_df2.groupby(cur_df2.index // args.batch_size)
-    
-    # Ensure both loaders have the same number of batches
     assert len(train_loader1) == len(train_loader2), "Mismatch in number of batches between subgraphs1 and subgraphs2"
-    
+
     pbar = tqdm(total=len(train_loader1))
-    pbar.set_description('%s mode with negative samples1 %d ...'%(mode, neg_samples1))
-        
-    ###################################################
-    # Initialize variables for loss and metrics
-    #Hasan
+    pbar.set_description(f'{mode} mode with negative samples1 {neg_samples1} ...')
+
+    # -----------------------------
+    # Metrics/reset
+    # -----------------------------
     subgraphs1, elabel1 = subgraphs1
     subgraphs2, elabel2 = subgraphs2
 
@@ -95,44 +113,52 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
     MLAUROC.reset()
     MLAUPRC.reset()
     MLF1.reset()
-    scaler1 = MinMaxScaler()
-    scaler2= MinMaxScaler()
-    
+
+    # -----------------------------
+    # Loop
+    # -----------------------------
     for ind in range(len(train_loader1)):
-        ###################################################
-        if args.use_cached_subgraph == False and mode == 'train':
+        # -------- choose mini-batch items deterministically per mode --------
+        if args.use_cached_subgraph is False and mode == 'train':
+            # on-the-fly sampling path
             subgraph_data_list1 = subgraphs1.all_root_nodes[ind]
             subgraph_data_list2 = subgraphs2.all_root_nodes[ind]
-            
-            mini_batch_inds1 = get_random_inds(len(subgraph_data_list1), cached_neg_samples1, neg_samples1,  seed = 0)
-            mini_batch_inds2 = get_random_inds(len(subgraph_data_list2), cached_neg_samples2, neg_samples2, seed = 1)
-            
+
+            mini_batch_inds1 = get_random_inds(len(subgraph_data_list1),
+                                               cached_neg_samples1, neg_samples1,
+                                               rng=rng1_local)
+            mini_batch_inds2 = get_random_inds(len(subgraph_data_list2),
+                                               cached_neg_samples2, neg_samples2,
+                                               rng=rng2_local)
+
             subgraph_data1 = subgraphs1.mini_batch(ind, mini_batch_inds1)
             subgraph_data2 = subgraphs2.mini_batch(ind, mini_batch_inds2)
-            
-        else: # valid + test
+
+        else:
+            # cached path (valid/test, or train if you cached)
             subgraph_data_list1 = subgraphs1[ind]
             subgraph_data_list2 = subgraphs2[ind]
 
-            mini_batch_inds1 = get_random_inds(len(subgraph_data_list1), cached_neg_samples1, neg_samples1, seed=0)
-            mini_batch_inds2 = get_random_inds(len(subgraph_data_list2), cached_neg_samples2, neg_samples2, seed=1)
+            mini_batch_inds1 = get_random_inds(len(subgraph_data_list1),
+                                               cached_neg_samples1, neg_samples1,
+                                               rng=rng1_local)
+            mini_batch_inds2 = get_random_inds(len(subgraph_data_list2),
+                                               cached_neg_samples2, neg_samples2,
+                                               rng=rng2_local)
 
             subgraph_data1 = [subgraph_data_list1[i] for i in mini_batch_inds1]
             subgraph_data2 = [subgraph_data_list2[i] for i in mini_batch_inds2]
-        
-        # Construct mini-batch giant graphs for both subgraphs
+
+        # -------- build giant graphs --------
         subgraph_data1 = construct_mini_batch_giant_graph(subgraph_data1, args.max_edges)
         subgraph_data2 = construct_mini_batch_giant_graph(subgraph_data2, args.max_edges)
-        
-        ###################################################
-        # Edge timestamps
-        
-        subgraph_edts1 = torch.as_tensor(subgraph_data1['edts'],dtype=torch.float32,device=args.device)
-        subgraph_edts2 = torch.as_tensor(subgraph_data2['edts'],dtype=torch.float32,device=args.device)
-        merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0) 
-        ###################################################
-        # Raw edge feats 
 
+        # Edge timestamps
+        subgraph_edts1 = torch.as_tensor(subgraph_data1['edts'], dtype=torch.float32, device=args.device)
+        subgraph_edts2 = torch.as_tensor(subgraph_data2['edts'], dtype=torch.float32, device=args.device)
+        merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0)
+
+        # Raw edge feats
         def get_subgraph_edge_feats(edge_feats, subgraph_data, subgraph_edts, edge_feat_dims, device):
             if edge_feats is not None:
                 eid_tensor = torch.as_tensor(subgraph_data['eid'], dtype=torch.long, device=edge_feats.device)
@@ -140,65 +166,52 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
             else:
                 return torch.zeros((subgraph_edts.shape[0], edge_feat_dims), device=device)
 
-        subgraph_edge_feats1 = get_subgraph_edge_feats(
-            edge_feats1, subgraph_data1, subgraph_edts1, args.edge_feat_dims, args.device)
-
-        subgraph_edge_feats2 = get_subgraph_edge_feats(
-            edge_feats2, subgraph_data2, subgraph_edts2, args.edge_feat_dims, args.device)
-
+        subgraph_edge_feats1 = get_subgraph_edge_feats(edge_feats1, subgraph_data1, subgraph_edts1, args.edge_feat_dims, args.device)
+        subgraph_edge_feats2 = get_subgraph_edge_feats(edge_feats2, subgraph_data2, subgraph_edts2, args.edge_feat_dims, args.device)
         merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)
-        
 
-        ###################################################
-        # Handle node features if required
+        # Node features (optional graph structure path)
         if args.use_graph_structure and node_feats is not None:
-            num_of_df_links1 = len(subgraph_data_list1) //  (cached_neg_samples1 + 2)   
-            subgraph_node_feats1 = compute_sign_feats(node_feats[:args.num_nodes1], df1, cur_inds1, num_of_df_links1, subgraph_data1['root_nodes'], args, num_nodes = args.num_nodes1)
+            num_of_df_links1 = len(subgraph_data_list1) // (cached_neg_samples1 + 2)
+            subgraph_node_feats1 = compute_sign_feats(node_feats[:args.num_nodes1], df1, cur_inds1, num_of_df_links1,
+                                                      subgraph_data1['root_nodes'], args, num_nodes=args.num_nodes1)
             cur_inds1 += num_of_df_links1
-            
-            num_of_df_links2 = len(subgraph_data_list2) //  (cached_neg_samples2 + 2)
-            subgraph_node_feats2 = compute_sign_feats(node_feats, df2, cur_inds2, num_of_df_links2, subgraph_data2['root_nodes'], args, num_nodes = args.num_nodes2)   
+
+            num_of_df_links2 = len(subgraph_data_list2) // (cached_neg_samples2 + 2)
+            subgraph_node_feats2 = compute_sign_feats(node_feats, df2, cur_inds2, num_of_df_links2,
+                                                      subgraph_data2['root_nodes'], args, num_nodes=args.num_nodes2)
             cur_inds2 += num_of_df_links2
         else:
             subgraph_node_feats1 = None
             subgraph_node_feats2 = None
-        
-        ###################################################
-        # Scale edge timestamps
 
-        # min–max scale to [0,1000]
-
+        # Scale edge timestamps to [0, 1000]
         min1, max1 = subgraph_edts1.min(), subgraph_edts1.max()
-        span1 = (max1 - min1).clamp(min=1e-6)      
+        span1 = (max1 - min1).clamp(min=1e-6)
         subgraph_edts1 = ((subgraph_edts1 - min1) / span1) * 1000
 
         min2, max2 = subgraph_edts2.min(), subgraph_edts2.max()
         span2 = (max2 - min2).clamp(min=1e-6)
         subgraph_edts2 = ((subgraph_edts2 - min2) / span2) * 1000
 
-
-        ###################################################
-        # Compute inds1 and inds2 based on all_edge_indptr
-        all_inds1 = []
-        has_temporal_neighbors1 = []
-        all_edge_indptr1 = subgraph_data1['all_edge_indptr']
-        for i in range(len(all_edge_indptr1) -1):
-            num_edges1 = all_edge_indptr1[i+1] - all_edge_indptr1[i]
+        # Compute inds1/inds2 based on all_edge_indptr
+        all_inds1, has_temporal_neighbors1 = [], []
+        aei1 = subgraph_data1['all_edge_indptr']
+        for i in range(len(aei1) - 1):
+            num_edges1 = aei1[i+1] - aei1[i]
             all_inds1.extend([args.max_edges * i + j for j in range(num_edges1)])
             has_temporal_neighbors1.append(num_edges1 > 0)
 
-        all_inds2 = []
-        has_temporal_neighbors2 = []
-        all_edge_indptr2 = subgraph_data2['all_edge_indptr']
-        for i in range(len(all_edge_indptr2) -1):
-            num_edges2 = all_edge_indptr2[i+1] - all_edge_indptr2[i]
+        all_inds2, has_temporal_neighbors2 = [], []
+        aei2 = subgraph_data2['all_edge_indptr']
+        for i in range(len(aei2) - 1):
+            num_edges2 = aei2[i+1] - aei2[i]
             all_inds2.extend([args.max_edges * i + j for j in range(num_edges2)])
             has_temporal_neighbors2.append(num_edges2 > 0)
-        
 
         merged_batch_size = len(has_temporal_neighbors1) + len(has_temporal_neighbors2)
 
-
+        # Merge node feats if present
         if subgraph_node_feats1 is None and subgraph_node_feats2 is None:
             merged_node_feats = None
         elif subgraph_node_feats1 is None:
@@ -206,79 +219,86 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
         elif subgraph_node_feats2 is None:
             merged_node_feats = subgraph_node_feats1
         else:
-            merged_node_feats = torch.cat([subgraph_node_feats1,
-                                        subgraph_node_feats2], dim=0)
+            merged_node_feats = torch.cat([subgraph_node_feats1, subgraph_node_feats2], dim=0)
 
-
-
+        # Edge labels for dataset2 (mask)
         mask = (elabel2[ind] == 1)
         subgraph_edge_type = torch.from_numpy(mask.astype(np.int64)).to(args.device)
 
-        # subgraph_edge_type = elabel2[ind]
+        # Pack model inputs
         inputs = [
-                merged_edge_feats.to(args.device), 
-                merged_edge_ts.to(args.device), 
-                merged_batch_size, 
-                torch.tensor(all_inds1 + all_inds2, dtype=torch.long, device=args.device),  
-                torch.tensor(list(subgraph_edge_type), dtype=torch.long, device=args.device)]
-        
-            # Add source node ID tensors from both datasets
+            merged_edge_feats.to(args.device),
+            merged_edge_ts.to(args.device),
+            merged_batch_size,
+            torch.tensor(all_inds1 + all_inds2, dtype=torch.long, device=args.device),
+            torch.tensor(list(subgraph_edge_type), dtype=torch.long, device=args.device),
+        ]
+
+        # Source node ID tensors
         if 'root_nodes' not in subgraph_data1 or 'root_nodes' not in subgraph_data2:
             raise KeyError("Both subgraph_data1 and subgraph_data2 must include 'root_nodes'")
 
-        src_ids1_tensor = torch.as_tensor(subgraph_data1['root_nodes'], dtype=torch.long, device=args.device)
-        src_ids2_tensor = torch.as_tensor(subgraph_data2['root_nodes'], dtype=torch.long, device=args.device)
 
-        inputs.append(src_ids1_tensor)
-        inputs.append(src_ids2_tensor)
-            
+        src_ids1 = torch.as_tensor(subgraph_data1['root_nodes'], dtype=torch.long, device=args.device)
+        src_ids2 = torch.as_tensor(subgraph_data2['root_nodes'], dtype=torch.long, device=args.device)
+        src_ts1  = torch.as_tensor(subgraph_data1['root_times'], dtype=torch.float32, device=args.device)
+        src_ts2  = torch.as_tensor(subgraph_data2['root_times'], dtype=torch.float32, device=args.device)
+        inputs.append(src_ids1)
+        inputs.append(src_ids2)
+        inputs.append(src_ts1)
+        inputs.append(src_ts2)
+
+        # Forward + optimize
         start_time = time.time()
-        
-        # Forward pass through the model
-        loss, pred, edge_label= model(
-            inputs, 
-            neg_samples=max(neg_samples1, neg_samples2),  
-            node_feats=merged_node_feats  
+        loss, pred, edge_label = model(
+            inputs,
+            neg_samples=max(neg_samples1, neg_samples2),
+            node_feats=merged_node_feats
         )
 
         if mode == 'train' and optimizer is not None:
             optimizer.zero_grad()
-            loss.backward(retain_graph=True)
+            loss.backward()  # retain_graph not needed here
             optimizer.step()
         time_epoch += (time.time() - start_time)
-        
-        ###################################################
-        # AUROC and AUPRC: will apply sigmoid internally
-        MLAUROC.update(pred, edge_label)
-        MLAUPRC.update(pred, edge_label)
 
-        if mode == 'valid':
-            # For validation mode, store predictions and labels for thresholding
-            all_val_preds.append(pred.detach().cpu())
-            all_val_labels.append(edge_label.detach().cpu())
-        
+       
+        if mode == 'train':
+            # GPU metrics
+            _pred  = pred.detach().cpu()
+            _label = edge_label.detach().cpu()
+            MLAUROC.update(_pred, _label)
+            MLAUPRC.update(_pred, _label)
+            bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
+            MLF1.update(bin_preds, _label.view(-1).long())
         else:
-            # train & test: binarize with last known threshold
-            bin_preds = prepare_preds_for_f1(pred, best_threshold).squeeze()
-            MLF1.update(bin_preds, edge_label.view(-1).long())
+            # CPU metrics (avoid non-deterministic CUDA cumsum)
+            _pred  = pred.detach().cpu()
+            _label = edge_label.detach().cpu()
+            MLAUROC.update(_pred, _label)
+            MLAUPRC.update(_pred, _label)
 
-        
+            if mode == 'valid':
+                all_val_preds.append(_pred)
+                all_val_labels.append(_label)
+            else:
+                # test F1 at best known threshold
+                bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
+                MLF1.update(bin_preds, _label.view(-1).long())
+
         # Accumulate loss
         loss_lst.append(float(loss))
-
         pbar.update(1)
-    pbar.close()    
-    
-    # Compute final metrics
+
+    pbar.close()
+
     total_auroc = MLAUROC.compute()
     total_auprc = MLAUPRC.compute()
 
-    # For validation mode, find the best threshold only once
     if mode == 'valid':
-        val_preds  = torch.cat(all_val_preds).view(-1).detach().cpu()
-        val_labels = torch.cat(all_val_labels).view(-1).detach().cpu()
-
-        val_probs = torch.sigmoid(val_preds).tolist()
+        val_preds  = torch.cat(all_val_preds).view(-1)           # CPU
+        val_labels = torch.cat(all_val_labels).view(-1)          # CPU
+        val_probs  = torch.sigmoid(val_preds).tolist()
 
         best_tau, best_f1 = 0.5, -1.0
         for τ in np.linspace(0.0, 1.0, 101):
@@ -288,25 +308,21 @@ def run_dual(model, optimizer, args, subgraphs1, subgraphs2, df1, df2, node_feat
                 best_f1, best_tau = f1, τ
 
         args.best_threshold = best_tau
-        logging.info(f"Chosen F1 threshold: {best_tau:.2f} → for best F1 {best_f1:.4f}")
-
-        # compute final F1 at best_tau
-        val_bin   = [1 if prob >= best_tau else 0 for prob in val_probs]
-        total_f1  = f1_score(val_labels, val_bin)
+        # F1 at best_tau for reporting
+        val_bin  = [1 if prob >= best_tau else 0 for prob in val_probs]
+        total_f1 = f1_score(val_labels, val_bin)
     else:
         total_f1 = MLF1.compute().item()
-    
 
-    if torch.is_tensor(total_auroc):
-        total_auroc = total_auroc.item()
-    if torch.is_tensor(total_auprc):
-        total_auprc = total_auprc.item()
-    if torch.is_tensor(total_f1):
-        total_f1 = total_f1.item()
-    
+    # Scalars
+    if torch.is_tensor(total_auroc): total_auroc = total_auroc.item()
+    if torch.is_tensor(total_auprc): total_auprc = total_auprc.item()
+    if torch.is_tensor(total_f1):    total_f1    = total_f1.item()
+
     print('%s mode with time %.4f, AUROC %.4f, AUPRC %.4f, F1 %.4f, loss %.4f'
-          % (mode, time_epoch, total_auroc, total_auprc, total_f1, loss.item()))
-    return total_auroc, total_auprc, total_f1, np.mean(loss_lst), time_epoch
+          % (mode, time_epoch, total_auroc, total_auprc, total_f1, float(np.mean(loss_lst))))
+    return total_auroc, total_auprc, total_f1, float(np.mean(loss_lst)), time_epoch
+
 
 
 def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):
@@ -325,9 +341,9 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         train_subgraphs1 = pre_compute_subgraphs(args, g1, df1, mode='train', input_data='edges1')
         train_subgraphs2 = pre_compute_subgraphs(args, g2, df2, mode='train', input_data="edges2")
     else:
-        train_subgraphs1 = get_subgraph_sampler(args, g1, df1, mode='train')
-        train_subgraphs2 = get_subgraph_sampler(args, g2, df2, mode='train')
-    
+        train_subgraphs1 = get_subgraph_sampler(args, g1, df1, mode='train', input_data='edges1')
+        train_subgraphs2 = get_subgraph_sampler(args, g2, df2, mode='train', input_data='edges2')
+
     valid_subgraphs1 = pre_compute_subgraphs(args, g1, df1, mode='valid', input_data='edges1')
     valid_subgraphs2 = pre_compute_subgraphs(args, g2, df2, mode='valid', input_data="edges2")
     test_subgraphs1  = pre_compute_subgraphs(args, g1, df1, mode='test', input_data='edges1')
@@ -358,31 +374,34 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     
     if args.predict_class:
         num_classes = args.num_edgeType + 1
-        train_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None).to(args.device)
-        valid_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None).to(args.device)
-        test_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None).to(args.device)
-        train_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None).to(args.device)
-        valid_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None).to(args.device)
-        test_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None).to(args.device)
-        train_F1 = MulticlassF1Score(num_classes, average="macro").to(args.device)
-        valid_F1 = MulticlassF1Score(num_classes, average="macro").to(args.device)
-        test_F1 = MulticlassF1Score(num_classes, average="macro").to(args.device)
+        train_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None)
+        valid_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None)
+        test_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None)
+        train_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
+        valid_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
+        test_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
+        train_F1 = MulticlassF1Score(num_classes, average="macro")
+        valid_F1 = MulticlassF1Score(num_classes, average="macro")
+        test_F1 = MulticlassF1Score(num_classes, average="macro")
     else:
-        train_AUROC = BinaryAUROC(thresholds=None).to(args.device)
-        valid_AUROC = BinaryAUROC(thresholds=None).to(args.device)
-        test_AUROC = BinaryAUROC(thresholds=None).to(args.device)
-        train_AUPRC = BinaryAveragePrecision(thresholds=None).to(args.device)
-        valid_AUPRC = BinaryAveragePrecision(thresholds=None).to(args.device)
-        test_AUPRC = BinaryAveragePrecision(thresholds=None).to(args.device)
-        train_F1 = BinaryF1Score().to(args.device)
-        valid_F1 = BinaryF1Score().to(args.device)
-        test_F1 = BinaryF1Score().to(args.device)
+        train_AUROC = BinaryAUROC(thresholds=None)            # CPU
+        train_AUPRC = BinaryAveragePrecision(thresholds=None) # CPU
+        train_F1    = BinaryF1Score()                         # CPU
+
+        valid_AUROC = BinaryAUROC(thresholds=None)            # CPU
+        valid_AUPRC = BinaryAveragePrecision(thresholds=None) # CPU
+        valid_F1    = BinaryF1Score()                         # CPU
+
+        test_AUROC  = BinaryAUROC(thresholds=None)            # CPU
+        test_AUPRC  = BinaryAveragePrecision(thresholds=None) # CPU
+        test_F1     = BinaryF1Score()                         # CPU
         
     
     ###################################################
     # Training loop
     for epoch in range(args.epochs):
         print(f'>>> Epoch {epoch + 1}')
+
         
         # Train
         train_auc, train_ap, train_f1, train_loss, time_train = run_dual(
@@ -447,13 +466,13 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'lowest loss': low_loss,
         'Total train time': user_train_total_time
     }
-    # save_result_folder = Path("results/pair_onehot_results") / args.data
-    # save_result_folder.mkdir(parents=True, exist_ok=True)
-    # save_result_path = save_result_folder / f"node{args.use_onehot_node_feats}_pair{args.use_pair_index}_type{args.use_type_feats}_results.json"
-    # with open(save_result_path, "w") as f:
-    #     json.dump(results, f, indent=2)
+    save_result_folder = Path("results") / f"no_memory_{str(args.no_memory).lower()}" / str(args.data)
+    save_result_folder.mkdir(parents=True, exist_ok=True)
+    save_result_path = save_result_folder / f"node{args.use_node_feats}_pair{args.use_pair_index}.json"
+    with open(save_result_path, "w") as f:
+        json.dump(results, f, indent=2)
 
-    # print(f"Results written to {save_result_path}")
+    print(f"Results written to {save_result_path}")
     
     return best_auc_model
 

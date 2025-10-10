@@ -89,7 +89,7 @@ class TransformerBlock(nn.Module):
     """
     def __init__(self, dims, 
                  channel_expansion_factor=4, 
-                 dropout=0.2, 
+                 dropout=0.2,
                  module_spec=None, use_single_layer=False):
         super().__init__()
         
@@ -330,26 +330,7 @@ class Patch_Encoding(nn.Module):
         x = self.mlp_head(x)
         return x
     
-#############################################
-# Persistent node memory
-#############################################
-class NodeMemory(nn.Module):
-    def __init__(self, num_nodes: int, mem_dim: int, init="xavier"):
-        super().__init__()
-        self.memory = nn.Parameter(torch.zeros(num_nodes, mem_dim))
-        if init == "xavier":
-            nn.init.xavier_uniform_(self.memory.data)
-        elif init == "normal":
-            nn.init.normal_(self.memory.data, std=0.02)
 
-    def get(self, node_ids: torch.Tensor) -> torch.Tensor:
-        return self.memory[node_ids]
-
-    @torch.no_grad()
-    def ema_update(self, node_ids: torch.Tensor, new_states: torch.Tensor, alpha: float = 0.5):
-        if node_ids.numel() == 0:
-            return
-        self.memory.data[node_ids] = alpha * self.memory.data[node_ids] + (1 - alpha) * new_states.detach()
 
 
 #############################################
@@ -456,50 +437,268 @@ class EdgePredictor_per_node(nn.Module):
             pred_neg = torch.cat([self.mlp(h_neg_edge1), self.mlp(h_neg_edge2), self.mlp(h_neg_edge3)], dim=0)
 
         return pred_true, pred_false, pred_neg, idx1, idx2
+    
+
+# ############################################
+# #Persistent node memory
+# ############################################
+# class NodeMemory(nn.Module):
+#     def __init__(self, num_nodes: int, mem_dim: int, init="xavier"):
+#         super().__init__()
+#         self.memory = nn.Parameter(torch.zeros(num_nodes, mem_dim))
+#         if init == "xavier":
+#             nn.init.xavier_uniform_(self.memory.data)
+#         elif init == "normal":
+#             nn.init.normal_(self.memory.data, std=0.02)
+
+#     def get(self, node_ids: torch.Tensor) -> torch.Tensor:
+#         return self.memory[node_ids]
+
+#     @torch.no_grad()
+#     def ema_update(self, node_ids: torch.Tensor, new_states: torch.Tensor, alpha: float = 0.3):
+#         if node_ids.numel() == 0:
+#             return
+#         self.memory.data[node_ids] = alpha * self.memory.data[node_ids] + (1 - alpha) * new_states.detach()
+
+
+
+
+
+
+
+# #############################################
+# # Dual Interface (Transformer + Memory)
+# #############################################
+# class Dual_Interface(nn.Module):
+#     def __init__(self,
+#                  mlp_mixer_configs,
+#                  edge_predictor_configs,
+#                  num_nodes,
+#                  mem_dim,
+#                  ema_alpha: float = 0.3,
+#                  use_memory: bool = True,
+#                  shared_memory: bool = False):
+#         super(Dual_Interface, self).__init__()
+
+#         # keep your original config keys
+#         self.time_feats_dim = edge_predictor_configs['dim_in_time']
+#         self.node_feats_dim = edge_predictor_configs['dim_in_node']
+
+#         # encoder
+#         if self.time_feats_dim > 0:
+#             self.base_model = Patch_Encoding(**mlp_mixer_configs)
+
+#         # effective embedding dim seen by the predictor
+#         self.enc_out = mlp_mixer_configs['out_channels']
+#         self.eff_D   = self.enc_out + (self.node_feats_dim if self.node_feats_dim > 0 else 0)
+
+#         # predictor
+#         self.edge_predictor = EdgePredictor_per_node(dim_in=self.eff_D, dim_hidden=max(100, self.enc_out))
+#         self.criterion = nn.BCEWithLogitsLoss(reduction='none')
+
+#         # memory knobs
+#         self.use_memory   = use_memory
+#         self.shared_memory = shared_memory
+#         self.ema_alpha    = ema_alpha
+
+#         if self.use_memory:
+#             if self.shared_memory:
+#                 self.node_memory = NodeMemory(num_nodes, self.eff_D)
+#             else:
+#                 # relation-aware (dataset1 vs dataset2)
+#                 self.node_memory1 = NodeMemory(num_nodes, self.eff_D)
+#                 self.node_memory2 = NodeMemory(num_nodes, self.eff_D)
+#         self.reset_parameters()
+
+#     def reset_parameters(self):
+#         if self.time_feats_dim > 0:
+#             self.base_model.reset_parameters()
+#         self.edge_predictor.reset_parameters()
+
+#     def forward(self, model_inputs, neg_samples, node_feats):
+#         # layout: [... base_model inputs ..., pos_edge_label, src_ids1, src_ids2]
+#         pos_edge_label = model_inputs[-3].view(-1).float()
+#         src_ids1, src_ids2 = model_inputs[-2], model_inputs[-1]
+#         base_inputs = model_inputs[:-3]
+
+#         # predict (x_cache returned for memory updates)
+#         pred_true, pred_false, pred_neg, idx1, idx2, x_cache = self.predict(
+#             base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2
+#         )
+
+#         # handle empty aligned batch
+#         if pred_true.numel() == 0 and pred_false.numel() == 0:
+#             device = pos_edge_label.device
+#             loss = torch.tensor(0.0, device=device, requires_grad=True)
+#             return loss, torch.empty(0, device=device), torch.empty(0, device=device)
+
+#         # Negative undersampling to balance classes
+
+#         if pred_neg.numel() > 0:
+#             target_neg = pred_true.size(0) + pred_false.size(0)
+#             if pred_neg.size(0) > target_neg > 0:
+#                 gen = torch.Generator(device=pred_neg.device).manual_seed(4242)  # fixed
+#                 idx = torch.randperm(pred_neg.size(0), generator=gen, device=pred_neg.device)[:target_neg]
+#                 pred_neg = pred_neg.index_select(0, idx)
+
+#         # Loss per bucket
+#         loss_true  = self.criterion(pred_true,  torch.ones_like(pred_true)).mean() if pred_true.numel()  > 0 else 0.0
+#         loss_false = self.criterion(pred_false, torch.zeros_like(pred_false)).mean() if pred_false.numel() > 0 else 0.0
+#         loss_neg   = self.criterion(pred_neg,   torch.zeros_like(pred_neg)).mean()   if pred_neg.numel()   > 0 else 0.0
+#         loss = loss_true + loss_false + loss_neg
+
+#         all_pred  = torch.cat([pred_true, pred_false, pred_neg], dim=0)
+#         all_label = torch.cat([torch.ones_like(pred_true),
+#                                torch.zeros_like(pred_false),
+#                                torch.zeros_like(pred_neg)], dim=0)
+
+#         # Update memory ONLY on true positives
+#         if self.use_memory and pred_true.numel() > 0:
+#             with torch.no_grad():
+#                 mask_true = (pos_edge_label.index_select(0, idx1).view(-1, 1) == 1)
+#                 up_idx1   = idx1[mask_true.view(-1)]
+#                 up_idx2   = idx2[mask_true.view(-1)]
+
+#                 num_edge = x_cache.shape[0] // (2 * neg_samples + 4)
+#                 base2    = 2*num_edge + num_edge*neg_samples
+#                 h_src1_now = x_cache[:num_edge]
+#                 h_src2_now = x_cache[base2 : base2 + num_edge]
+
+#                 if self.shared_memory:
+#                     self.node_memory.ema_update(src_ids1.index_select(0, up_idx1),
+#                                                 h_src1_now.index_select(0, up_idx1),
+#                                                 alpha=self.ema_alpha)
+#                     self.node_memory.ema_update(src_ids2.index_select(0, up_idx2),
+#                                                 h_src2_now.index_select(0, up_idx2),
+#                                                 alpha=self.ema_alpha)
+#                 else:
+#                     self.node_memory1.ema_update(src_ids1.index_select(0, up_idx1),
+#                                                  h_src1_now.index_select(0, up_idx1),
+#                                                  alpha=self.ema_alpha)
+#                     self.node_memory2.ema_update(src_ids2.index_select(0, up_idx2),
+#                                                  h_src2_now.index_select(0, up_idx2),
+#                                                  alpha=self.ema_alpha)
+
+#         return loss, all_pred, all_label
+
+#     def predict(self, base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2):
+#         # encoder
+#         if self.time_feats_dim > 0 and self.node_feats_dim == 0:
+#             x = self.base_model(*base_inputs)
+#         elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
+#             x = self.base_model(*base_inputs)
+#             x = torch.cat([x, node_feats], dim=1)
+#         elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
+#             x = node_feats
+#         else:
+#             raise ValueError('Either dim_in_time or dim_in_node must be > 0')
+
+#         # memory fusion (additive) into source slices
+#         num_edge = x.shape[0] // (2 * neg_samples + 4)
+#         base2    = 2*num_edge + num_edge*neg_samples
+#         if self.use_memory:
+#             if self.shared_memory:
+#                 x[:num_edge]                   += self.node_memory.get(src_ids1[:num_edge])
+#                 x[base2 : base2 + num_edge]    += self.node_memory.get(src_ids2[:num_edge])
+#             else:
+#                 x[:num_edge]                   += self.node_memory1.get(src_ids1[:num_edge])
+#                 x[base2 : base2 + num_edge]    += self.node_memory2.get(src_ids2[:num_edge])
+
+#         # predictor (splits true/false/neg + returns alignment)
+#         pred_true, pred_false, pred_neg, idx1, idx2 = self.edge_predictor(
+#             x, pos_edge_label, neg_samples=neg_samples, src_ids1=src_ids1, src_ids2=src_ids2
+#         )
+#         return pred_true, pred_false, pred_neg, idx1, idx2, x
+
+
+############################################
+# Persistent node memory (buffer + time-aware EMA)
+############################################
+class NodeMemory(nn.Module):
+    def __init__(self, num_nodes, mem_dim):
+        super().__init__()
+        self.register_buffer("memory", torch.zeros(num_nodes, mem_dim))
+        self.register_buffer("last_update_ts", torch.full((num_nodes,), -1.0))
+
+    @torch.no_grad()
+    def ema_update(self, node_ids, new_states, ts, half_life= 1000.0):
+        if node_ids.numel() == 0:
+            return
+        prev_ts = self.last_update_ts.index_select(0, node_ids)
+        dt = torch.clamp(ts - prev_ts, min=0.0)
+        # convert Δt to alpha via half-life: alpha = exp(-ln2*Δt/half_life)
+        alpha = torch.exp(-0.69314718 * dt / half_life).unsqueeze(1)  # [B,1]
+        old = self.memory.index_select(0, node_ids)
+        new = alpha * old + (1 - alpha) * new_states.detach()
+        self.memory.index_copy_(0, node_ids, new)
+        self.last_update_ts.index_copy_(0, node_ids, ts)
+
+    def get(self, node_ids: torch.Tensor) -> torch.Tensor:
+        return self.memory.index_select(0, node_ids)
 
 
 #############################################
+# Gated memory fusion
+#############################################
+class GatedMemoryFusion(nn.Module):
+    def __init__(self, d):
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.Linear(2 * d, d),
+            nn.Sigmoid()
+        )
+        self.proj = nn.Linear(d, d)
+
+    def forward(self, x, m):
+        # x, m: [N, d]
+        g = self.gate(torch.cat([x, m], dim=-1))
+        return x + g * self.proj(m)
+
+############################################
 # Dual Interface (Transformer + Memory)
-#############################################
+############################################
 class Dual_Interface(nn.Module):
     def __init__(self,
                  mlp_mixer_configs,
                  edge_predictor_configs,
                  num_nodes,
                  mem_dim,
-                 ema_alpha: float = 0.5,
+                 ema_alpha: float = 0.3,
                  use_memory: bool = True,
-                 shared_memory: bool = False):
+                 shared_memory: bool = False,
+                 consistency_coef: float = 0.2,
+                 half_life: float = 1000.0):
         super(Dual_Interface, self).__init__()
 
-        # keep your original config keys
         self.time_feats_dim = edge_predictor_configs['dim_in_time']
         self.node_feats_dim = edge_predictor_configs['dim_in_node']
-
-        # encoder
         if self.time_feats_dim > 0:
             self.base_model = Patch_Encoding(**mlp_mixer_configs)
 
-        # effective embedding dim seen by the predictor
         self.enc_out = mlp_mixer_configs['out_channels']
         self.eff_D   = self.enc_out + (self.node_feats_dim if self.node_feats_dim > 0 else 0)
 
-        # predictor
-        self.edge_predictor = EdgePredictor_per_node(dim_in=self.eff_D, dim_hidden=max(100, self.enc_out))
+        self.edge_predictor = EdgePredictor_per_node(dim_in=self.eff_D,
+                                                     dim_hidden=max(100, self.enc_out))
         self.criterion = nn.BCEWithLogitsLoss(reduction='none')
 
-        # memory knobs
-        self.use_memory   = use_memory
+        self.use_memory    = use_memory
         self.shared_memory = shared_memory
-        self.ema_alpha    = ema_alpha
+        self.ema_alpha     = ema_alpha
+        self.consistency_coef = consistency_coef
+        self.half_life = half_life
+        # self.mem_warmup_epochs = mem_warmup_epochs
+        # self.use_confidence_writes = use_confidence_writes
+        # self.cur_epoch = 0
 
         if self.use_memory:
             if self.shared_memory:
                 self.node_memory = NodeMemory(num_nodes, self.eff_D)
             else:
-                # relation-aware (dataset1 vs dataset2)
                 self.node_memory1 = NodeMemory(num_nodes, self.eff_D)
                 self.node_memory2 = NodeMemory(num_nodes, self.eff_D)
+            self.mem_fuse = GatedMemoryFusion(self.eff_D)
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -508,30 +707,30 @@ class Dual_Interface(nn.Module):
         self.edge_predictor.reset_parameters()
 
     def forward(self, model_inputs, neg_samples, node_feats):
-        # layout: [... base_model inputs ..., pos_edge_label, src_ids1, src_ids2]
-        pos_edge_label = model_inputs[-3].view(-1).float()
-        src_ids1, src_ids2 = model_inputs[-2], model_inputs[-1]
-        base_inputs = model_inputs[:-3]
+        # New trailing inputs: ..., pos_edge_label, src_ids1, src_ids2, src_ts1, src_ts2
+        pos_edge_label = model_inputs[-5].view(-1).float()
+        src_ids1, src_ids2 = model_inputs[-4], model_inputs[-3]
+        src_ts1,  src_ts2  = model_inputs[-2], model_inputs[-1]  # [B] float timestamps (UN-normalized)
+        base_inputs = model_inputs[:-5]
 
-        # predict (x_cache returned for memory updates)
         pred_true, pred_false, pred_neg, idx1, idx2, x_cache = self.predict(
             base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2
         )
 
-        # handle empty aligned batch
         if pred_true.numel() == 0 and pred_false.numel() == 0:
             device = pos_edge_label.device
             loss = torch.tensor(0.0, device=device, requires_grad=True)
             return loss, torch.empty(0, device=device), torch.empty(0, device=device)
 
-        # Negative undersampling to balance classes
+        # Negative undersampling (deterministic)
         if pred_neg.numel() > 0:
             target_neg = pred_true.size(0) + pred_false.size(0)
             if pred_neg.size(0) > target_neg > 0:
-                perm = torch.randperm(pred_neg.size(0), device=pred_neg.device)[:target_neg]
-                pred_neg = pred_neg[perm]
+                gen = torch.Generator(device=pred_neg.device).manual_seed(4242)
+                idx = torch.randperm(pred_neg.size(0), generator=gen, device=pred_neg.device)[:target_neg]
+                pred_neg = pred_neg.index_select(0, idx)
 
-        # Loss per bucket
+        # Loss
         loss_true  = self.criterion(pred_true,  torch.ones_like(pred_true)).mean() if pred_true.numel()  > 0 else 0.0
         loss_false = self.criterion(pred_false, torch.zeros_like(pred_false)).mean() if pred_false.numel() > 0 else 0.0
         loss_neg   = self.criterion(pred_neg,   torch.zeros_like(pred_neg)).mean()   if pred_neg.numel()   > 0 else 0.0
@@ -542,7 +741,7 @@ class Dual_Interface(nn.Module):
                                torch.zeros_like(pred_false),
                                torch.zeros_like(pred_neg)], dim=0)
 
-        # Update memory ONLY on true positives
+        # Memory update (now with real timestamps)
         if self.use_memory and pred_true.numel() > 0:
             with torch.no_grad():
                 mask_true = (pos_edge_label.index_select(0, idx1).view(-1, 1) == 1)
@@ -554,20 +753,38 @@ class Dual_Interface(nn.Module):
                 h_src1_now = x_cache[:num_edge]
                 h_src2_now = x_cache[base2 : base2 + num_edge]
 
+                # gather matching timestamps for those sources
+                up_ts1 = src_ts1.index_select(0, up_idx1)  # [K]
+                up_ts2 = src_ts2.index_select(0, up_idx2)  # [K]
+
                 if self.shared_memory:
-                    self.node_memory.ema_update(src_ids1.index_select(0, up_idx1),
-                                                h_src1_now.index_select(0, up_idx1),
-                                                alpha=self.ema_alpha)
-                    self.node_memory.ema_update(src_ids2.index_select(0, up_idx2),
-                                                h_src2_now.index_select(0, up_idx2),
-                                                alpha=self.ema_alpha)
+                    self.node_memory.ema_update(
+                        src_ids1.index_select(0, up_idx1),
+                        h_src1_now.index_select(0, up_idx1),
+                        ts=up_ts1, half_life=self.half_life
+                    )
+                    self.node_memory.ema_update(
+                        src_ids2.index_select(0, up_idx2),
+                        h_src2_now.index_select(0, up_idx2),
+                        ts=up_ts2, half_life=self.half_life
+                    )
                 else:
-                    self.node_memory1.ema_update(src_ids1.index_select(0, up_idx1),
-                                                 h_src1_now.index_select(0, up_idx1),
-                                                 alpha=self.ema_alpha)
-                    self.node_memory2.ema_update(src_ids2.index_select(0, up_idx2),
-                                                 h_src2_now.index_select(0, up_idx2),
-                                                 alpha=self.ema_alpha)
+                    self.node_memory1.ema_update(
+                        src_ids1.index_select(0, up_idx1),
+                        h_src1_now.index_select(0, up_idx1),
+                        ts=up_ts1, half_life=self.half_life
+                    )
+                    self.node_memory2.ema_update(
+                        src_ids2.index_select(0, up_idx2),
+                        h_src2_now.index_select(0, up_idx2),
+                        ts=up_ts2, half_life=self.half_life
+                    )
+
+        # Consistency loss (unaltered)
+        if self.use_memory and not self.shared_memory and idx1.numel() > 0:
+            m1 = self.node_memory1.get(src_ids1.index_select(0, idx1))
+            m2 = self.node_memory2.get(src_ids2.index_select(0, idx2))
+            loss = loss + self.consistency_coef * torch.mean((m1 - m2) ** 2)
 
         return loss, all_pred, all_label
 
@@ -583,18 +800,21 @@ class Dual_Interface(nn.Module):
         else:
             raise ValueError('Either dim_in_time or dim_in_node must be > 0')
 
-        # memory fusion (additive) into source slices
+        # memory fusion (gated) into source slices
         num_edge = x.shape[0] // (2 * neg_samples + 4)
         base2    = 2*num_edge + num_edge*neg_samples
         if self.use_memory:
             if self.shared_memory:
-                x[:num_edge]                   += self.node_memory.get(src_ids1[:num_edge])
-                x[base2 : base2 + num_edge]    += self.node_memory.get(src_ids2[:num_edge])
+                m1 = self.node_memory.get(src_ids1[:num_edge])
+                m2 = self.node_memory.get(src_ids2[:num_edge])
+                x[:num_edge]             = self.mem_fuse(x[:num_edge], m1)
+                x[base2:base2+num_edge]  = self.mem_fuse(x[base2:base2+num_edge], m2)
             else:
-                x[:num_edge]                   += self.node_memory1.get(src_ids1[:num_edge])
-                x[base2 : base2 + num_edge]    += self.node_memory2.get(src_ids2[:num_edge])
+                m1 = self.node_memory1.get(src_ids1[:num_edge])
+                m2 = self.node_memory2.get(src_ids2[:num_edge])
+                x[:num_edge]             = self.mem_fuse(x[:num_edge], m1)
+                x[base2:base2+num_edge]  = self.mem_fuse(x[base2:base2+num_edge], m2)
 
-        # predictor (splits true/false/neg + returns alignment)
         pred_true, pred_false, pred_neg, idx1, idx2 = self.edge_predictor(
             x, pos_edge_label, neg_samples=neg_samples, src_ids1=src_ids1, src_ids2=src_ids2
         )

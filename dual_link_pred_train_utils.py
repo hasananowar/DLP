@@ -324,195 +324,6 @@ def run_dual(model, optimizer, args,
     return total_auroc, total_auprc, total_f1, float(np.mean(loss_lst)), time_epoch
 
 
-# def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):
-#     """
-#     Train the model for dual link prediction tasks.
-
-#     Returns:
-#         best_auc_model: The best-performing model based on validation loss.
-#     """
-#     import copy, json
-#     from pathlib import Path
-#     import torch
-
-#     # -----------------------------
-#     # Optimizer + step counter wrap
-#     # -----------------------------
-#     base_opt = torch.optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-
-#     class _OptWrapper:
-#         """Proxy that increments model.global_step every time step() is called."""
-#         def __init__(self, opt, model_ref):
-#             self._opt = opt
-#             self._model = model_ref
-#         def __getattr__(self, name):
-#             return getattr(self._opt, name)
-#         def step(self, *a, **kw):
-#             out = self._opt.step(*a, **kw)
-#             self._model.global_step = getattr(self._model, "global_step", 0) + 1
-#             return out
-#         def zero_grad(self, *a, **kw):
-#             return self._opt.zero_grad(*a, **kw)
-
-#     optimizer = _OptWrapper(base_opt, model)
-
-#     # -----------------------------------
-#     # Memory read warm-up / read-dropout
-#     # -----------------------------------
-#     # Set sensible defaults if args don't have these fields
-#     model.mem_read_warmup = getattr(args, "mem_read_warmup", 1000)  # steps to keep reads OFF
-#     model.p_read_drop     = getattr(args, "p_read_drop", 0.10)      # prob to skip reads (train only)
-#     model.global_step     = 0                                       # start counter at 0
-
-#     # -----------------
-#     # Subgraph samplers
-#     # -----------------
-#     if args.use_cached_subgraph:
-#         train_subgraphs1 = pre_compute_subgraphs(args, g1, df1, mode='train', input_data='edges1')
-#         train_subgraphs2 = pre_compute_subgraphs(args, g2, df2, mode='train', input_data="edges2")
-#     else:
-#         train_subgraphs1 = get_subgraph_sampler(args, g1, df1, mode='train', input_data='edges1')
-#         train_subgraphs2 = get_subgraph_sampler(args, g2, df2, mode='train', input_data='edges2')
-
-#     valid_subgraphs1 = pre_compute_subgraphs(args, g1, df1, mode='valid', input_data='edges1')
-#     valid_subgraphs2 = pre_compute_subgraphs(args, g2, df2, mode='valid', input_data="edges2")
-#     test_subgraphs1  = pre_compute_subgraphs(args, g1, df1, mode='test',  input_data='edges1')
-#     test_subgraphs2  = pre_compute_subgraphs(args, g2, df2, mode='test',  input_data='edges2')
-
-#     # ------------
-#     # Metric setup
-#     # ------------
-#     all_results = {
-#         'train_ap': [], 'valid_ap': [], 'test_ap': [],
-#         'train_auc': [], 'valid_auc': [], 'test_auc': [],
-#         'train_f1': [], 'valid_f1': [], 'test_f1': [],
-#         'train_loss': [], 'valid_loss': [], 'test_loss': [],
-#     }
-
-#     low_loss = float('inf')
-#     user_train_total_time = 0.0
-#     user_epoch_num = 0
-#     best_epoch = -1
-#     best_test_auc = best_test_ap = best_test_f1 = 0.0
-#     best_auc_model = copy.deepcopy(model).cpu()  # safe fallback in case val never improves
-
-#     if args.predict_class:
-#         num_classes = args.num_edgeType + 1
-#         train_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None)
-#         valid_AUROC = MulticlassAUROC(num_classes, average="macro", thresholds=None)
-#         test_AUROC  = MulticlassAUROC(num_classes, average="macro", thresholds=None)
-#         train_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
-#         valid_AUPRC = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
-#         test_AUPRC  = MulticlassAveragePrecision(num_classes, average="macro", thresholds=None)
-#         train_F1    = MulticlassF1Score(num_classes, average="macro")
-#         valid_F1    = MulticlassF1Score(num_classes, average="macro")
-#         test_F1     = MulticlassF1Score(num_classes, average="macro")
-#     else:
-#         train_AUROC = BinaryAUROC(thresholds=None)
-#         train_AUPRC = BinaryAveragePrecision(thresholds=None)
-#         train_F1    = BinaryF1Score()
-
-#         valid_AUROC = BinaryAUROC(thresholds=None)
-#         valid_AUPRC = BinaryAveragePrecision(thresholds=None)
-#         valid_F1    = BinaryF1Score()
-
-#         test_AUROC  = BinaryAUROC(thresholds=None)
-#         test_AUPRC  = BinaryAveragePrecision(thresholds=None)
-#         test_F1     = BinaryF1Score()
-
-#     # -------------
-#     # Training loop
-#     # -------------
-#     for epoch in range(args.epochs):
-#         print(f'>>> Epoch {epoch + 1}')
-
-#         # -------- Train --------
-#         model.train()  # enables read-dropout; predict() checks self.training
-#         train_auc, train_ap, train_f1, train_loss, time_train = run_dual(
-#             model, optimizer, args, train_subgraphs1, train_subgraphs2,
-#             df1, df2, node_feats, edge_feats1, edge_feats2,
-#             train_AUROC, train_AUPRC, train_F1, mode='train'
-#         )
-
-#         # -------- Validate --------
-#         model.eval()   # disable read-dropout and any BatchNorm/Dropout
-#         with torch.no_grad():
-#             valid_auc, valid_ap, valid_f1, valid_loss, time_valid = run_dual(
-#                 model, None, args, valid_subgraphs1, valid_subgraphs2,
-#                 df1, df2, node_feats, edge_feats1, edge_feats2,
-#                 valid_AUROC, valid_AUPRC, valid_F1, mode='valid'
-#             )
-
-#             test_auc, test_ap, test_f1, test_loss, time_test = run_dual(
-#                 model, None, args, test_subgraphs1, test_subgraphs2,
-#                 df1, df2, node_feats, edge_feats1, edge_feats2,
-#                 test_AUROC, test_AUPRC, test_F1, mode='test'
-#             )
-
-#         # -------- Track best by valid loss --------
-#         if valid_loss < low_loss:
-#             low_loss = float(valid_loss)
-#             best_epoch = epoch
-#             best_test_auc, best_test_ap, best_test_f1 = float(test_auc), float(test_ap), float(test_f1)
-#             best_auc_model = copy.deepcopy(model).cpu()
-
-#         user_train_total_time += (time_train + time_valid)
-#         user_epoch_num += 1
-
-#         # Early stop if no improvement for 30 epochs
-#         if epoch > best_epoch + 30:
-#             break
-
-#         # Logs
-#         all_results['train_ap'].append(float(train_ap))
-#         all_results['valid_ap'].append(float(valid_ap))
-#         all_results['test_ap'].append(float(test_ap))
-
-#         all_results['train_auc'].append(float(train_auc))
-#         all_results['valid_auc'].append(float(valid_auc))
-#         all_results['test_auc'].append(float(test_auc))
-
-#         all_results['train_f1'].append(float(train_f1))
-#         all_results['valid_f1'].append(float(valid_f1))
-#         all_results['test_f1'].append(float(test_f1))
-
-#         all_results['train_loss'].append(float(train_loss))
-#         all_results['valid_loss'].append(float(valid_loss))
-#         all_results['test_loss'].append(float(test_loss))
-
-#         print(f"Train: AUROC {train_auc:.4f}, AUPRC {train_ap:.4f}, F1 {train_f1:.4f}, Loss {train_loss:.4f}")
-#         print(f"Valid: AUROC {valid_auc:.4f}, AUPRC {valid_ap:.4f}, F1 {valid_f1:.4f}, Loss {valid_loss:.4f}")
-#         print(f"Test : AUROC {test_auc:.4f}, AUPRC {test_ap:.4f}, F1 {test_f1:.4f}, Loss {test_loss:.4f}")
-
-#     print(f'Best Epoch: {best_epoch}, '
-#           f'Best Test AUROC: {best_test_auc:.4f}, '
-#           f'Best Test AUPRC: {best_test_ap:.4f}, '
-#           f'Best Test F1: {best_test_f1:.4f}, '
-#           f'Best Valid Loss: {low_loss:.4f}')
-
-#     # Save the best metrics and epoch info
-#     results = {
-#         'Total epochs': user_epoch_num,
-#         'best_epoch': best_epoch,
-#         'best_test_auc': best_test_auc,
-#         'best_test_ap': best_test_ap,
-#         'best_test_f1': best_test_f1,
-#         'lowest loss': low_loss,
-#         'Total train time': user_train_total_time,
-#         'mem_read_warmup': model.mem_read_warmup,
-#         'p_read_drop': model.p_read_drop,
-#     }
-#     save_result_folder = Path("results") / f"no_memory_{str(args.no_memory).lower()}" / str(args.data)
-#     save_result_folder.mkdir(parents=True, exist_ok=True)
-#     save_result_path = save_result_folder / f"node{args.use_node_feats}_pair{args.use_pair_index}.json"
-#     with open(save_result_path, "w") as f:
-#         json.dump(results, f, indent=2)
-#     print(f"Results written to {save_result_path}")
-
-#     return best_auc_model
-
-
-
 
 def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):
     """
@@ -521,6 +332,44 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     Returns:
         best_auc_model: The best-performing model based on validation loss.
     """
+
+    def human_bytes(nbytes: int) -> str:
+        x = float(nbytes)
+        for u in ["B","KB","MB","GB","TB"]:
+            if x < 1024 or u == "TB":
+                return f"{x:.2f} {u}"
+            x /= 1024
+        return f"{x:.2f} TB"
+
+    def _unique_tensors(tensors):
+        seen = set()
+        for t in tensors:
+            obj_id = id(t)
+            if obj_id not in seen:
+                seen.add(obj_id)
+                yield t
+
+    def param_buffer_bytes(model: torch.nn.Module):
+        """
+        Returns:
+            p_cnt, b_cnt: element counts
+            p_bytes, b_bytes, total_bytes: raw sizes in bytes (ints)
+        """
+        params  = list(_unique_tensors(model.parameters(recurse=True)))
+        buffers = list(_unique_tensors(model.buffers(recurse=True)))
+
+        p_cnt   = sum(p.numel() for p in params)
+        b_cnt   = sum(b.numel() for b in buffers)
+
+        p_bytes = sum(p.numel() * p.element_size() for p in params)
+        b_bytes = sum(b.numel() * b.element_size() for b in buffers)
+        return p_cnt, b_cnt, p_bytes, b_bytes, (p_bytes + b_bytes)
+
+    # ---- usage ----
+    no_params, no_buffers, p_bytes, b_bytes, total_bytes = param_buffer_bytes(model)
+
+
+
     optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     best_auc_model = None
 
@@ -643,20 +492,27 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         print(f"Train: AUROC1 {train_auc:.4f}, AUPRC {train_ap:.4f}, F1 {train_f1:.4f}, Loss {train_loss:.4f}")
         print(f"Valid: AUROC1 {valid_auc:.4f}, AUPRC {valid_ap:.4f}, F1 {valid_f1:.4f}, Loss {valid_loss:.4f}")
         print(f"Test: AUROC1 {test_auc:.4f}, AUPRC {test_ap:.4f}, F1 {test_f1:.4f}, Loss {test_loss:.4f}")
-    
-    print(f'Best Epoch: {best_epoch}, Best Test AUROC: {best_test_auc:.4f}, Best Test AUPRC: {best_test_ap:.4f}, Best Test F1: {best_test_f1:.4f}, Best Valid Loss: {low_loss:.4f}')
-    
+
+    print(f'AUROC: {best_test_auc:.4f}, AUPRC: {best_test_ap:.4f}, F1: {best_test_f1:.4f}, Valid Loss: {low_loss:.4f}, total_memory: {human_bytes(total_bytes)}')
+
     # Save the best metrics and epoch information
+
     results = {
-        'Total epochs': user_epoch_num,
-        'best_epoch': best_epoch,
-        'best_test_auc': best_test_auc,
-        'best_test_ap': best_test_ap,
-        'best_test_f1': best_test_f1,
-        'lowest loss': low_loss,
-        'Total train time': user_train_total_time
-    }
-    save_result_folder = Path("results") / f"no_memory_{str(args.no_memory).lower()}" / str(args.data)
+    'Total epochs': user_epoch_num,
+    'best_epoch': best_epoch,
+    'best_test_auc': best_test_auc,
+    'best_test_ap': best_test_ap,
+    'best_test_f1': best_test_f1,
+    'lowest loss': low_loss,
+    'Total train time': user_train_total_time,
+    'no_params': no_params,
+    'no_buffers': no_buffers,
+    'param_size': human_bytes(p_bytes),
+    'buffer_size': human_bytes(b_bytes),
+    'total_memory': human_bytes(total_bytes),
+}
+
+    save_result_folder = Path("results") / f"preference_{str(args.enable_preference).lower()}" / str(args.data)
     save_result_folder.mkdir(parents=True, exist_ok=True)
     save_result_path = save_result_folder / f"node{args.use_node_feats}_pair{args.use_pair_index}.json"
     with open(save_result_path, "w") as f:

@@ -57,7 +57,7 @@ def get_args():
     parser.add_argument('--use_node_feats', action='store_true')
     parser.add_argument('--use_pair_index', action='store_true')
     parser.add_argument('--no_memory', action='store_true', help='Disable persistent node memory')
-    parser.add_argument('--shared_memory', action='store_true', help='single shared memory')
+    parser.add_argument('--enable_preference', action='store_true', help='Disable')
 
     parser.add_argument('--use_graph_structure', action='store_true')
     parser.add_argument('--structure_time_gap', type=int, default=2000)
@@ -193,7 +193,7 @@ def load_model_dual(args):
     }
 
     if args.model == 'DLP':
-        from model import Dual_Interface
+        from model import Dual_Interface, Dual_Interface_LitePPR, Dual_Interface_Pref
         from dual_link_pred_train_utils import link_pred_train_dual
 
         mixer_configs = {
@@ -215,13 +215,20 @@ def load_model_dual(args):
     # node IDs are consistent across datasets
     num_nodes = max(args.num_nodes1, args.num_nodes2)
 
-    model = Dual_Interface(
+#     model = Dual_Interface(
+#     mixer_configs,
+#     edge_predictor_configs,
+#     num_nodes=args.num_nodes1,
+#     mem_dim=args.hidden_dims,
+#     use_memory=not args.no_memory,
+#     shared_memory=args.shared_memory
+# )
+
+    model = Dual_Interface_Pref(
     mixer_configs,
     edge_predictor_configs,
     num_nodes=args.num_nodes1,
-    mem_dim=args.hidden_dims,
-    use_memory=not args.no_memory,
-    shared_memory=args.shared_memory
+    enable_preference=args.enable_preference
 )
 
     for k, v in model.named_parameters():

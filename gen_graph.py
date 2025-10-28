@@ -14,9 +14,7 @@ args = parser.parse_args()
 print(args)
 
 
-# df = pd.read_csv('DATA/{}/edges.csv'.format(args.data))
-
-# Extract the base name of the input CSV file (e.g., edges1 from HB/edges1.csv)
+# Extract the base name of the input CSV file 
 npz_filename = os.path.splitext(os.path.basename(args.data))[0] + '.npz'
 npz_output_path = os.path.join('DATA', os.path.dirname(args.data), npz_filename)
 
@@ -24,11 +22,6 @@ npz_output_path = os.path.join('DATA', os.path.dirname(args.data), npz_filename)
 csv_path = os.path.join('DATA', args.data)
 df = pd.read_csv(csv_path)
 
-# num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1 
-
-# src_num_nodes = int(df['src'].max()) - int(df['src'].min()) + 1
-# dst_num_nodes = int(df['dst'].max()) - int(df['dst'].min()) + 1
-# num_nodes = src_num_nodes + dst_num_nodes
 num_nodes = int(max(df['src'].max(), df['dst'].max())) + 1
 print('num_nodes: ', num_nodes)
 
@@ -71,9 +64,6 @@ for i in tqdm(range(ext_full_indptr.shape[0] - 1)):
     tsort(i, ext_full_indptr, ext_full_indices, ext_full_ts, ext_full_eid)
 
 print('saving...')
-
-# np.savez('DATA/{}/ext_full.npz'.format(args.data), indptr=ext_full_indptr,
-#         indices=ext_full_indices, ts=ext_full_ts, eid=ext_full_eid)
 
 np.savez(npz_output_path, indptr=ext_full_indptr,
          indices=ext_full_indices, ts=ext_full_ts, eid=ext_full_eid)

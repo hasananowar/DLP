@@ -474,7 +474,7 @@ class Dual_Interface_Pref(nn.Module):
                  edge_predictor_configs,
                  num_nodes,
                  half_life: float = 40.0,
-                 enable_preference: bool = False):
+                 enable_preference: bool = True):
         super().__init__()
 
         # ---- encoder dims ----
@@ -652,585 +652,585 @@ class Dual_Interface_Pref(nn.Module):
 ############################################
 # Persistent node memory (buffer + time-aware EMA)
 ############################################
-class NodeMemory(nn.Module):
-    def __init__(self, num_nodes, mem_dim):
-        super().__init__()
-        self.register_buffer("memory", torch.zeros(num_nodes, mem_dim))
-        self.register_buffer("last_update_ts", torch.full((num_nodes,), -1.0))
-
-    @torch.no_grad()
-    def ema_update(self, node_ids, new_states, ts, half_life= 40.0):
-        if node_ids.numel() == 0:
-            return
-        prev_ts = self.last_update_ts.index_select(0, node_ids)
-        dt = torch.clamp(ts - prev_ts, min=0.0)
-        # convert Δt to alpha via half-life: alpha = exp(-ln2*Δt/half_life)
-        alpha = torch.exp(-0.69314718 * dt / half_life).unsqueeze(1)  # [B,1]
-        old = self.memory.index_select(0, node_ids)
-        new = alpha * old + (1 - alpha) * new_states.detach()
-        self.memory.index_copy_(0, node_ids, new)
-        self.last_update_ts.index_copy_(0, node_ids, ts)
-
-
-    def get(self, node_ids: torch.Tensor) -> torch.Tensor:
-        """Return memory rows for node_ids"""
-        if node_ids is None or node_ids.numel() == 0:
-            return self.memory.new_zeros((0, self.memory.size(1)))
-        if node_ids.dtype != torch.long:
-            node_ids = node_ids.long()
-        node_ids = node_ids.to(self.memory.device)
-        return self.memory.index_select(0, node_ids)
-
-############################################
-# Gated memory fusion
-############################################
-class GatedMemoryFusion(nn.Module):
-    def __init__(self, d):
-        super().__init__()
-        self.gate = nn.Sequential(
-            nn.Linear(2 * d, d),
-            nn.Sigmoid()
-        )
-        self.proj = nn.Linear(d, d)
-
-    def forward(self, x, m):
-        # x, m: [N, d]
-        g = self.gate(torch.cat([x, m], dim=-1))
-        return x + g * self.proj(m)
-
-
-
-class Dual_Interface(nn.Module):
-    def __init__(self,
-                 mlp_mixer_configs,
-                 edge_predictor_configs,
-                 num_nodes,
-                 mem_dim,                    # NOTE: unused; kept for backward compatibility
-                 ema_alpha: float = 0.3,     # NOTE: unused; kept for backward compatibility
-                 use_memory: bool = True,
-                 shared_memory: bool = False,
-                 consistency_coef: float = 0.05,
-                 half_life: float = 40.0):
-        super(Dual_Interface, self).__init__()
-
-        # ---------------- Core encoder dims ----------------
-        self.time_feats_dim = edge_predictor_configs['dim_in_time']
-        self.node_feats_dim = edge_predictor_configs['dim_in_node']
-        if self.time_feats_dim > 0:
-            self.base_model = Patch_Encoding(**mlp_mixer_configs)
-
-        self.enc_out = mlp_mixer_configs['out_channels']
-        self.eff_D   = self.enc_out + (self.node_feats_dim if self.node_feats_dim > 0 else 0)
-
-        # ------------- Light-weight dynamics ----------------
-        self.prop1 = NodePropensity(num_nodes)
-        self.prop2 = NodePropensity(num_nodes)
-        self.pref1 = PreferenceMemory(num_nodes, self.eff_D)
-        self.pref2 = PreferenceMemory(num_nodes, self.eff_D)
-        self.rec1  = RecencyTracker(num_nodes, default_dt=1.0)
-        self.rec2  = RecencyTracker(num_nodes, default_dt=1.0)
-
-        # learnable weights (start at 0 so training can “opt in”)
-        self.w_b        = nn.Parameter(torch.tensor(0.0))  # propensity bias weight
-        self.w_r        = nn.Parameter(torch.tensor(0.0))  # recency weight
-        self.alpha_pref = nn.Parameter(torch.tensor(0.0))  # preference-dot weight
-
-        # ------------- Link scorer --------------------------
-        self.edge_predictor = EdgePredictor_per_node(dim_in=self.eff_D,
-                                                     dim_hidden=max(100, self.enc_out))
-        self.criterion = nn.BCEWithLogitsLoss(reduction='none')
-
-        # ------------- Memory knobs -------------------------
-        self.use_memory    = use_memory
-        self.shared_memory = shared_memory
-        self.consistency_coef = consistency_coef
-        self.half_life = half_life
-
-        if self.use_memory:
-            if self.shared_memory:
-                self.node_memory = NodeMemory(num_nodes, self.eff_D)
-            else:
-                self.node_memory1 = NodeMemory(num_nodes, self.eff_D)
-                self.node_memory2 = NodeMemory(num_nodes, self.eff_D)
-            self.mem_fuse = GatedMemoryFusion(self.eff_D)
-
-        self.reset_parameters()
-
-    # ---------- small helpers to avoid duplication ----------
-    @staticmethod
-    def _layout_bounds(total_rows: int, neg_samples: int):
-        """
-        Given total rows in x and neg_samples, return block boundaries.
-        Layout: [src1 | pos1 | neg1 | src2 | pos2 | neg2]
-        """
-        num_edge = total_rows // (2 * neg_samples + 4)
-        base1     = num_edge
-        base_pos1 = base1 + num_edge
-        base_neg1 = base_pos1 + num_edge * neg_samples
-        base2     = 2 * num_edge + num_edge * neg_samples
-        base_pos2 = base2 + num_edge
-        base_neg2 = base_pos2 + num_edge
-        end_all   = base_neg2 + num_edge * neg_samples
-        return num_edge, base1, base_pos1, base_neg1, base2, base_pos2, base_neg2, end_all
-
-    @staticmethod
-    def _neg_rows(idx: torch.Tensor, neg_samples: int, device: torch.device):
-        """
-        Build the flattened row indices [i*neg ... (i+1)*neg-1] for each i in idx.
-        """
-        if idx.numel() == 0 or neg_samples <= 0:
-            return torch.empty(0, dtype=torch.long, device=device)
-        rows = []
-        for i in idx.tolist():
-            rows.extend(range(i * neg_samples, (i + 1) * neg_samples))
-        return torch.as_tensor(rows, dtype=torch.long, device=device)
-
-    # --------------------------------------------------------
-    def reset_parameters(self):
-        if self.time_feats_dim > 0:
-            self.base_model.reset_parameters()
-        self.edge_predictor.reset_parameters()
-        # dynamics weights already at 0.0
-
-    def forward(self, model_inputs, neg_samples, node_feats):
-        # trailing: ..., pos_edge_label, src_ids1, src_ids2, src_ts1, src_ts2
-        pos_edge_label = model_inputs[-5].view(-1).float()
-        src_ids1, src_ids2 = model_inputs[-4], model_inputs[-3]
-        src_ts1,  src_ts2  = model_inputs[-2], model_inputs[-1]  # [B] raw timestamps
-        base_inputs = model_inputs[:-5]
-
-        # ---- predict (returns x_cache for extras/updates) ----
-        pred_true, pred_false, pred_neg, idx1, idx2, x_cache = self.predict(
-            base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2
-        )
-
-        # empty batch guard
-        if pred_true.numel() == 0 and pred_false.numel() == 0:
-            device = pos_edge_label.device
-            loss = torch.tensor(0.0, device=device, requires_grad=True)
-            return loss, torch.empty(0, device=device), torch.empty(0, device=device)
-
-        # ---- add (1)-(3) dynamics to logits -----------------
-        num_edge, base1, base_pos1, base_neg1, base2, base_pos2, base_neg2, end_all = \
-            self._layout_bounds(x_cache.shape[0], neg_samples)
-
-        if idx1.numel() > 0:
-            # (1) node propensity bias b[u]
-            b1_all = self.prop1.get(src_ids1[:num_edge])  # [num_edge]
-            b2_all = self.prop2.get(src_ids2[:num_edge])  # [num_edge]
-            b_mean = 0.5 * (b1_all.index_select(0, idx1) + b2_all.index_select(0, idx2))  # [K]
-
-            # (2) recency feature log(1+Δt)
-            dt1_all = self.rec1.get_dt(src_ids1[:num_edge], src_ts1[:num_edge])
-            dt2_all = self.rec2.get_dt(src_ids2[:num_edge], src_ts2[:num_edge])
-            dt_mean = 0.5 * (dt1_all.index_select(0, idx1) + dt2_all.index_select(0, idx2))  # [K]
-            rec_feat = torch.log1p(dt_mean)
-
-            # (3) preference dot with current pos dst embeddings
-            m1 = self.pref1.get(src_ids1[:num_edge]).index_select(0, idx1)  # [K, D]
-            m2 = self.pref2.get(src_ids2[:num_edge]).index_select(0, idx2)  # [K, D]
-            h_pos1 = x_cache[base1:base_pos1].index_select(0, idx1)         # [K, D]
-            h_pos2 = x_cache[base_pos2:base_pos2+num_edge].index_select(0, idx2)  # [K, D]
-            pref_dot = 0.5 * ((m1 * h_pos1).sum(-1) + (m2 * h_pos2).sum(-1))      # [K]
-
-            extras = (self.w_b * b_mean + self.w_r * rec_feat + self.alpha_pref * pref_dot)  # [K]
-
-            # split to true / false
-            y_pos = pos_edge_label.index_select(0, idx1).view(-1, 1)
-            mask_true  = (y_pos == 1).view(-1)
-            mask_false = (y_pos == 0).view(-1)
-
-            if pred_true.numel() > 0:
-                pred_true  = pred_true  + extras[mask_true].view(-1, 1)
-            if pred_false.numel() > 0:
-                pred_false = pred_false + extras[mask_false].view(-1, 1)
-
-            # negatives (3 stacks): reuse same per-src extras, and preference against neg dst
-            if pred_neg.numel() > 0 and neg_samples > 0:
-                rows1 = self._neg_rows(idx1, neg_samples, x_cache.device)
-                rows2 = self._neg_rows(idx2, neg_samples, x_cache.device)
-                K = idx1.size(0)
-
-                b_rep   = b_mean.unsqueeze(1).expand(K, neg_samples).reshape(-1)   # [K*neg]
-                rec_rep = rec_feat.unsqueeze(1).expand(K, neg_samples).reshape(-1) # [K*neg]
-
-                m1_rep = m1.unsqueeze(1).expand(K, neg_samples, m1.size(1)).reshape(-1, m1.size(1))
-                m2_rep = m2.unsqueeze(1).expand(K, neg_samples, m2.size(1)).reshape(-1, m2.size(1))
-
-                h_neg1 = x_cache[base_neg1:base_neg1 + num_edge * neg_samples].index_select(0, rows1)
-                h_neg2 = x_cache[base_neg2:end_all].index_select(0, rows2)
-
-                pref_neg1 = (m1_rep * h_neg1).sum(-1)
-                pref_neg2 = (m2_rep * h_neg2).sum(-1)
-                pref_neg3 = 0.5 * ((m1_rep * h_neg1).sum(-1) + (m2_rep * h_neg2).sum(-1))
-
-                extras_neg = torch.cat([
-                    self.w_b * b_rep + self.w_r * rec_rep + self.alpha_pref * pref_neg1,
-                    self.w_b * b_rep + self.w_r * rec_rep + self.alpha_pref * pref_neg2,
-                    self.w_b * b_rep + self.w_r * rec_rep + self.alpha_pref * pref_neg3
-                ], dim=0).view(-1, 1)
-
-                pred_neg = pred_neg + extras_neg
-
-        # ---- optional negative undersampling (kept) ----------
-        if pred_neg.numel() > 0:
-            target_neg = pred_true.size(0) + pred_false.size(0)
-            if target_neg > 0 and pred_neg.size(0) > target_neg:
-                gen = torch.Generator(device=pred_neg.device).manual_seed(4242)
-                keep = torch.randperm(pred_neg.size(0), generator=gen, device=pred_neg.device)[:target_neg]
-                pred_neg = pred_neg.index_select(0, keep)
-
-        # ---- loss --------------------------------------------
-        loss_true  = self.criterion(pred_true,  torch.ones_like(pred_true)).mean() if pred_true.numel()  > 0 else 0.0
-        loss_false = self.criterion(pred_false, torch.zeros_like(pred_false)).mean() if pred_false.numel() > 0 else 0.0
-        loss_neg   = self.criterion(pred_neg,   torch.zeros_like(pred_neg)).mean()   if pred_neg.numel()   > 0 else 0.0
-        loss = loss_true + loss_false + loss_neg
-
-        all_pred  = torch.cat([pred_true, pred_false, pred_neg], dim=0)
-        all_label = torch.cat([torch.ones_like(pred_true),
-                               torch.zeros_like(pred_false),
-                               torch.zeros_like(pred_neg)], dim=0)
-
-        # ---- updates: memory + dynamics ----------------------
-        if idx1.numel() > 0:
-            with torch.no_grad():
-                # original node memory (positives only)
-                if self.use_memory and pred_true.numel() > 0:
-                    mask_true = (pos_edge_label.index_select(0, idx1).view(-1, 1) == 1)
-                    up_idx1   = idx1[mask_true.view(-1)]
-                    up_idx2   = idx2[mask_true.view(-1)]
-
-                    h_src1_now = x_cache[:num_edge]
-                    h_src2_now = x_cache[base2 : base2 + num_edge]
-
-                    up_ts1 = src_ts1.index_select(0, up_idx1)
-                    up_ts2 = src_ts2.index_select(0, up_idx2)
-
-                    if self.shared_memory:
-                        self.node_memory.ema_update(src_ids1.index_select(0, up_idx1),
-                                                    h_src1_now.index_select(0, up_idx1),
-                                                    ts=up_ts1, half_life=self.half_life)
-                        self.node_memory.ema_update(src_ids2.index_select(0, up_idx2),
-                                                    h_src2_now.index_select(0, up_idx2),
-                                                    ts=up_ts2, half_life=self.half_life)
-                    else:
-                        self.node_memory1.ema_update(src_ids1.index_select(0, up_idx1),
-                                                     h_src1_now.index_select(0, up_idx1),
-                                                     ts=up_ts1, half_life=self.half_life)
-                        self.node_memory2.ema_update(src_ids2.index_select(0, up_idx2),
-                                                     h_src2_now.index_select(0, up_idx2),
-                                                     ts=up_ts2, half_life=self.half_life)
-
-                # dynamics: propensity (all aligned), preference (positives), recency (all aligned)
-                y_pos_aligned = pos_edge_label.index_select(0, idx1).float()
-
-                self.prop1.ema_update(src_ids1.index_select(0, idx1), y_pos_aligned,
-                                      src_ts1.index_select(0, idx1), half_life=self.half_life)
-                self.prop2.ema_update(src_ids2.index_select(0, idx2), y_pos_aligned,
-                                      src_ts2.index_select(0, idx2), half_life=self.half_life)
-
-                mask_true_up = (y_pos_aligned == 1)
-                if torch.any(mask_true_up):
-                    up_idx1p = idx1[mask_true_up]
-                    up_idx2p = idx2[mask_true_up]
-                    dst1_pos_now = x_cache[base1:base_pos1].index_select(0, up_idx1p)
-                    dst2_pos_now = x_cache[base_pos2:base_pos2+num_edge].index_select(0, up_idx2p)
-                    self.pref1.ema_update(src_ids1.index_select(0, up_idx1p), dst1_pos_now,
-                                          src_ts1.index_select(0, up_idx1p), half_life=self.half_life)
-                    self.pref2.ema_update(src_ids2.index_select(0, up_idx2p), dst2_pos_now,
-                                          src_ts2.index_select(0, up_idx2p), half_life=self.half_life)
-
-                self.rec1.update_src(src_ids1.index_select(0, idx1), src_ts1.index_select(0, idx1))
-                self.rec2.update_src(src_ids2.index_select(0, idx2), src_ts2.index_select(0, idx2))
-
-        # optional cross-memory consistency (non-shared only)
-        if self.use_memory and not self.shared_memory and idx1.numel() > 0:
-            m1 = self.node_memory1.get(src_ids1.index_select(0, idx1))
-            m2 = self.node_memory2.get(src_ids2.index_select(0, idx2))
-            loss = loss + self.consistency_coef * torch.mean((m1 - m2) ** 2)
-
-        return loss, all_pred, all_label
-
-    def predict(self, base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2):
-        # ---- encoder ----
-        if self.time_feats_dim > 0 and self.node_feats_dim == 0:
-            x = self.base_model(*base_inputs)
-        elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
-            x = self.base_model(*base_inputs)
-            x = torch.cat([x, node_feats], dim=1)
-        elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
-            x = node_feats
-        else:
-            raise ValueError('Either dim_in_time or dim_in_node must be > 0')
-
-        # ---- memory fusion on source slices (if enabled) ----
-        num_edge, _, _, _, base2, _, _, _ = self._layout_bounds(x.shape[0], neg_samples)
-        if self.use_memory:
-            if self.shared_memory:
-                m1 = self.node_memory.get(src_ids1[:num_edge])
-                m2 = self.node_memory.get(src_ids2[:num_edge])
-                x[:num_edge]            = self.mem_fuse(x[:num_edge],            m1)
-                x[base2:base2+num_edge] = self.mem_fuse(x[base2:base2+num_edge], m2)
-            else:
-                m1 = self.node_memory1.get(src_ids1[:num_edge])
-                m2 = self.node_memory2.get(src_ids2[:num_edge])
-                x[:num_edge]            = self.mem_fuse(x[:num_edge],            m1)
-                x[base2:base2+num_edge] = self.mem_fuse(x[base2:base2+num_edge], m2)
-
-        # ---- edge predictor ----
-        pred_true, pred_false, pred_neg, idx1, idx2 = self.edge_predictor(
-            x, pos_edge_label, neg_samples=neg_samples, src_ids1=src_ids1, src_ids2=src_ids2
-        )
-        return pred_true, pred_false, pred_neg, idx1, idx2, x
-
-
-
-
-    """
-    A simplified Dual_Interface that retains three light-weight dynamics: Propensity, Preference, Recency.
-    """
-
-    def __init__(self,
-                 mlp_mixer_configs,
-                 edge_predictor_configs,
-                 num_nodes,
-                 mem_dim,                    # kept for BC; unused
-                 half_life: float = 40.0,
-                 enable_propensity: bool = False,
-                 enable_preference: bool = True,
-                 enable_recency: bool = False):
-        super().__init__()
-
-        # -------- encoder dims --------
-        self.time_feats_dim = edge_predictor_configs['dim_in_time']
-        self.node_feats_dim = edge_predictor_configs['dim_in_node']
-        if self.time_feats_dim > 0:
-            self.base_model = Patch_Encoding(**mlp_mixer_configs)
-
-        self.enc_out = mlp_mixer_configs['out_channels']
-        self.eff_D   = self.enc_out + (self.node_feats_dim if self.node_feats_dim > 0 else 0)
-
-        # -------- light-weight dynamics --------
-        self.enable_propensity = enable_propensity
-        self.enable_preference = enable_preference
-        self.enable_recency    = enable_recency
-
-        if self.enable_propensity:
-            self.prop1 = NodePropensity(num_nodes)
-            self.prop2 = NodePropensity(num_nodes)
-            self.w_b   = nn.Parameter(torch.tensor(0.0))  # weight on propensity
-        else:
-            self.register_parameter('w_b', None)
-
-        if self.enable_preference:
-            self.pref1 = PreferenceMemory(num_nodes, self.eff_D)
-            self.pref2 = PreferenceMemory(num_nodes, self.eff_D)
-            self.alpha_pref = nn.Parameter(torch.tensor(0.0))  # weight on pref·dst
-        else:
-            self.register_parameter('alpha_pref', None)
-
-        if self.enable_recency:
-            self.rec1  = RecencyTracker(num_nodes, default_dt=1.0)
-            self.rec2  = RecencyTracker(num_nodes, default_dt=1.0)
-            self.w_r   = nn.Parameter(torch.tensor(0.0))  # weight on log1p(Δt)
-        else:
-            self.register_parameter('w_r', None)
-
-        # -------- link scorer --------
-        self.edge_predictor = EdgePredictor_per_node(dim_in=self.eff_D,
-                                                     dim_hidden=max(100, self.enc_out))
-        self.criterion = nn.BCEWithLogitsLoss(reduction='none')
-        self.half_life = half_life
-
-        self.reset_parameters()
-
-    # ---------- helpers ----------
-    @staticmethod
-    def _layout_bounds(total_rows: int, neg_samples: int):
-        # Layout: [src1 | pos1 | neg1 | src2 | pos2 | neg2]
-        num_edge = total_rows // (2 * neg_samples + 4)
-        base1     = num_edge
-        base_pos1 = base1 + num_edge
-        base_neg1 = base_pos1 + num_edge * neg_samples
-        base2     = 2 * num_edge + num_edge * neg_samples
-        base_pos2 = base2 + num_edge
-        base_neg2 = base_pos2 + num_edge
-        end_all   = base_neg2 + num_edge * neg_samples
-        return num_edge, base1, base_pos1, base_neg1, base2, base_pos2, base_neg2, end_all
-
-    @staticmethod
-    def _neg_rows(idx: torch.Tensor, neg_samples: int, device: torch.device):
-        if idx.numel() == 0 or neg_samples <= 0:
-            return torch.empty(0, dtype=torch.long, device=device)
-        rows = []
-        for i in idx.tolist():
-            rows.extend(range(i * neg_samples, (i + 1) * neg_samples))
-        return torch.as_tensor(rows, dtype=torch.long, device=device)
-
-    # -----------------------------
-    def reset_parameters(self):
-        if self.time_feats_dim > 0:
-            self.base_model.reset_parameters()
-        self.edge_predictor.reset_parameters()
-
-    def forward(self, model_inputs, neg_samples, node_feats):
-        # trailing: ..., pos_edge_label, src_ids1, src_ids2, src_ts1, src_ts2
-        pos_edge_label = model_inputs[-5].view(-1).float()
-        src_ids1, src_ids2 = model_inputs[-4], model_inputs[-3]
-        src_ts1,  src_ts2  = model_inputs[-2], model_inputs[-1]
-        base_inputs = model_inputs[:-5]
-
-        pred_true, pred_false, pred_neg, idx1, idx2, x_cache = self.predict(
-            base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2
-        )
-
-        if pred_true.numel() == 0 and pred_false.numel() == 0:
-            device = pos_edge_label.device
-            loss = torch.tensor(0.0, device=device, requires_grad=True)
-            return loss, torch.empty(0, device=device), torch.empty(0, device=device)
-
-        # ----- add PPR extras -----
-        num_edge, base1, base_pos1, base_neg1, base2, base_pos2, base_neg2, end_all = \
-            self._layout_bounds(x_cache.shape[0], neg_samples)
-
-        if idx1.numel() > 0:
-            K = idx1.size(0)
-            extras_true  = None
-            extras_false = None
-
-            # collect per-src stats (each optional)
-            if self.enable_propensity:
-                b1_all = self.prop1.get(src_ids1[:num_edge])
-                b2_all = self.prop2.get(src_ids2[:num_edge])
-                b_mean = 0.5 * (b1_all.index_select(0, idx1) + b2_all.index_select(0, idx2))  # [K]
-            else:
-                b_mean = None
-
-            if self.enable_recency:
-                dt1_all = self.rec1.get_dt(src_ids1[:num_edge], src_ts1[:num_edge])
-                dt2_all = self.rec2.get_dt(src_ids2[:num_edge], src_ts2[:num_edge])
-                rec_feat = torch.log1p(0.5 * (dt1_all.index_select(0, idx1) + dt2_all.index_select(0, idx2)))  # [K]
-            else:
-                rec_feat = None
-
-            if self.enable_preference:
-                m1 = self.pref1.get(src_ids1[:num_edge]).index_select(0, idx1)  # [K, D]
-                m2 = self.pref2.get(src_ids2[:num_edge]).index_select(0, idx2)  # [K, D]
-                h_pos1 = x_cache[base1:base_pos1].index_select(0, idx1)         # [K, D]
-                h_pos2 = x_cache[base_pos2:base_pos2+num_edge].index_select(0, idx2)  # [K, D]
-                pref_dot = 0.5 * ((m1 * h_pos1).sum(-1) + (m2 * h_pos2).sum(-1))     # [K]
-            else:
-                pref_dot = None
-
-            # assemble extras = w_b*b + w_r*rec + alpha_pref*pref_dot
-            extras_aligned = torch.zeros(K, device=x_cache.device)
-            if b_mean is not None:
-                extras_aligned = extras_aligned + self.w_b * b_mean
-            if rec_feat is not None:
-                extras_aligned = extras_aligned + self.w_r * rec_feat
-            if pref_dot is not None:
-                extras_aligned = extras_aligned + self.alpha_pref * pref_dot
-
-            # split to true/false
-            y_pos = pos_edge_label.index_select(0, idx1).view(-1, 1)
-            mask_true  = (y_pos == 1).view(-1)
-            mask_false = (y_pos == 0).view(-1)
-
-            if pred_true.numel() > 0:
-                pred_true  = pred_true  + extras_aligned[mask_true].view(-1, 1)
-            if pred_false.numel() > 0:
-                pred_false = pred_false + extras_aligned[mask_false].view(-1, 1)
-
-            # negatives if present (3 stacks)
-            if pred_neg.numel() > 0 and neg_samples > 0:
-                rows1 = self._neg_rows(idx1, neg_samples, x_cache.device)
-                rows2 = self._neg_rows(idx2, neg_samples, x_cache.device)
-
-                extras_neg = torch.zeros(3 * K * neg_samples, device=x_cache.device)
-
-                if self.enable_propensity or self.enable_recency:
-                    # expand scalar per-src features across K*neg rows
-                    if self.enable_propensity:
-                        b_rep = b_mean.unsqueeze(1).expand(K, neg_samples).reshape(-1)
-                        extras_neg += self.w_b * b_rep.repeat(3)
-                    if self.enable_recency:
-                        r_rep = rec_feat.unsqueeze(1).expand(K, neg_samples).reshape(-1)
-                        extras_neg += self.w_r * r_rep.repeat(3)
-
-                if self.enable_preference:
-                    m1_rep = m1.unsqueeze(1).expand(K, neg_samples, m1.size(1)).reshape(-1, m1.size(1))
-                    m2_rep = m2.unsqueeze(1).expand(K, neg_samples, m2.size(1)).reshape(-1, m2.size(1))
-                    h_neg1 = x_cache[base_neg1:base_neg1 + num_edge * neg_samples].index_select(0, rows1)
-                    h_neg2 = x_cache[base_neg2:end_all].index_select(0, rows2)
-                    pref_neg1 = (m1_rep * h_neg1).sum(-1)
-                    pref_neg2 = (m2_rep * h_neg2).sum(-1)
-                    pref_neg3 = 0.5 * ((m1_rep * h_neg1).sum(-1) + (m2_rep * h_neg2).sum(-1))
-                    extras_neg += self.alpha_pref * torch.cat([pref_neg1, pref_neg2, pref_neg3], dim=0)
-
-                pred_neg = pred_neg + extras_neg.view(-1, 1)
-
-        # optional undersampling as before
-        if pred_neg.numel() > 0:
-            target_neg = pred_true.size(0) + pred_false.size(0)
-            if target_neg > 0 and pred_neg.size(0) > target_neg:
-                gen = torch.Generator(device=pred_neg.device).manual_seed(4242)
-                keep = torch.randperm(pred_neg.size(0), generator=gen, device=pred_neg.device)[:target_neg]
-                pred_neg = pred_neg.index_select(0, keep)
-
-        # loss
-        loss_true  = self.criterion(pred_true,  torch.ones_like(pred_true)).mean() if pred_true.numel()  > 0 else 0.0
-        loss_false = self.criterion(pred_false, torch.zeros_like(pred_false)).mean() if pred_false.numel() > 0 else 0.0
-        loss_neg   = self.criterion(pred_neg,   torch.zeros_like(pred_neg)).mean()   if pred_neg.numel()   > 0 else 0.0
-        loss = loss_true + loss_false + loss_neg
-
-        all_pred  = torch.cat([pred_true, pred_false, pred_neg], dim=0)
-        all_label = torch.cat([torch.ones_like(pred_true),
-                               torch.zeros_like(pred_false),
-                               torch.zeros_like(pred_neg)], dim=0)
-
-        # updates for PPR (no heavy memory)
-        if idx1.numel() > 0:
-            with torch.no_grad():
-                y_pos_aligned = pos_edge_label.index_select(0, idx1).float()
-                if self.enable_propensity:
-                    self.prop1.ema_update(src_ids1.index_select(0, idx1), y_pos_aligned,
-                                          src_ts1.index_select(0, idx1), half_life=self.half_life)
-                    self.prop2.ema_update(src_ids2.index_select(0, idx2), y_pos_aligned,
-                                          src_ts2.index_select(0, idx2), half_life=self.half_life)
-
-                if self.enable_preference:
-                    mask_true_up = (y_pos_aligned == 1)
-                    if torch.any(mask_true_up):
-                        up_idx1p = idx1[mask_true_up]
-                        up_idx2p = idx2[mask_true_up]
-                        dst1_pos_now = x_cache[self._layout_bounds(x_cache.shape[0], neg_samples)[1]:
-                                               self._layout_bounds(x_cache.shape[0], neg_samples)[2]].index_select(0, up_idx1p)
-                        dst2_pos_now = x_cache[self._layout_bounds(x_cache.shape[0], neg_samples)[5]:
-                                               self._layout_bounds(x_cache.shape[0], neg_samples)[5] + self._layout_bounds(x_cache.shape[0], neg_samples)[0]].index_select(0, up_idx2p)
-                        self.pref1.ema_update(src_ids1.index_select(0, up_idx1p), dst1_pos_now,
-                                              src_ts1.index_select(0, up_idx1p), half_life=self.half_life)
-                        self.pref2.ema_update(src_ids2.index_select(0, up_idx2p), dst2_pos_now,
-                                              src_ts2.index_select(0, up_idx2p), half_life=self.half_life)
-
-                if self.enable_recency:
-                    self.rec1.update_src(src_ids1.index_select(0, idx1), src_ts1.index_select(0, idx1))
-                    self.rec2.update_src(src_ids2.index_select(0, idx2), src_ts2.index_select(0, idx2))
-
-        return loss, all_pred, all_label
-
-    def predict(self, base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2):
-        # encoder (unchanged)
-        if self.time_feats_dim > 0 and self.node_feats_dim == 0:
-            x = self.base_model(*base_inputs)
-        elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
-            x = self.base_model(*base_inputs)
-            x = torch.cat([x, node_feats], dim=1)
-        elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
-            x = node_feats
-        else:
-            raise ValueError('Either dim_in_time or dim_in_node must be > 0')
-
-        pred_true, pred_false, pred_neg, idx1, idx2 = self.edge_predictor(
-            x, pos_edge_label, neg_samples=neg_samples, src_ids1=src_ids1, src_ids2=src_ids2
-        )
-        return pred_true, pred_false, pred_neg, idx1, idx2, x
+# class NodeMemory(nn.Module):
+#     def __init__(self, num_nodes, mem_dim):
+#         super().__init__()
+#         self.register_buffer("memory", torch.zeros(num_nodes, mem_dim))
+#         self.register_buffer("last_update_ts", torch.full((num_nodes,), -1.0))
+
+#     @torch.no_grad()
+#     def ema_update(self, node_ids, new_states, ts, half_life= 40.0):
+#         if node_ids.numel() == 0:
+#             return
+#         prev_ts = self.last_update_ts.index_select(0, node_ids)
+#         dt = torch.clamp(ts - prev_ts, min=0.0)
+#         # convert Δt to alpha via half-life: alpha = exp(-ln2*Δt/half_life)
+#         alpha = torch.exp(-0.69314718 * dt / half_life).unsqueeze(1)  # [B,1]
+#         old = self.memory.index_select(0, node_ids)
+#         new = alpha * old + (1 - alpha) * new_states.detach()
+#         self.memory.index_copy_(0, node_ids, new)
+#         self.last_update_ts.index_copy_(0, node_ids, ts)
+
+
+#     def get(self, node_ids: torch.Tensor) -> torch.Tensor:
+#         """Return memory rows for node_ids"""
+#         if node_ids is None or node_ids.numel() == 0:
+#             return self.memory.new_zeros((0, self.memory.size(1)))
+#         if node_ids.dtype != torch.long:
+#             node_ids = node_ids.long()
+#         node_ids = node_ids.to(self.memory.device)
+#         return self.memory.index_select(0, node_ids)
+
+# ############################################
+# # Gated memory fusion
+# ############################################
+# class GatedMemoryFusion(nn.Module):
+#     def __init__(self, d):
+#         super().__init__()
+#         self.gate = nn.Sequential(
+#             nn.Linear(2 * d, d),
+#             nn.Sigmoid()
+#         )
+#         self.proj = nn.Linear(d, d)
+
+#     def forward(self, x, m):
+#         # x, m: [N, d]
+#         g = self.gate(torch.cat([x, m], dim=-1))
+#         return x + g * self.proj(m)
+
+
+
+# class Dual_Interface(nn.Module):
+#     def __init__(self,
+#                  mlp_mixer_configs,
+#                  edge_predictor_configs,
+#                  num_nodes,
+#                  mem_dim,                    # NOTE: unused; kept for backward compatibility
+#                  ema_alpha: float = 0.3,     # NOTE: unused; kept for backward compatibility
+#                  use_memory: bool = True,
+#                  shared_memory: bool = False,
+#                  consistency_coef: float = 0.05,
+#                  half_life: float = 40.0):
+#         super(Dual_Interface, self).__init__()
+
+#         # ---------------- Core encoder dims ----------------
+#         self.time_feats_dim = edge_predictor_configs['dim_in_time']
+#         self.node_feats_dim = edge_predictor_configs['dim_in_node']
+#         if self.time_feats_dim > 0:
+#             self.base_model = Patch_Encoding(**mlp_mixer_configs)
+
+#         self.enc_out = mlp_mixer_configs['out_channels']
+#         self.eff_D   = self.enc_out + (self.node_feats_dim if self.node_feats_dim > 0 else 0)
+
+#         # ------------- Light-weight dynamics ----------------
+#         self.prop1 = NodePropensity(num_nodes)
+#         self.prop2 = NodePropensity(num_nodes)
+#         self.pref1 = PreferenceMemory(num_nodes, self.eff_D)
+#         self.pref2 = PreferenceMemory(num_nodes, self.eff_D)
+#         self.rec1  = RecencyTracker(num_nodes, default_dt=1.0)
+#         self.rec2  = RecencyTracker(num_nodes, default_dt=1.0)
+
+#         # learnable weights (start at 0 so training can “opt in”)
+#         self.w_b        = nn.Parameter(torch.tensor(0.0))  # propensity bias weight
+#         self.w_r        = nn.Parameter(torch.tensor(0.0))  # recency weight
+#         self.alpha_pref = nn.Parameter(torch.tensor(0.0))  # preference-dot weight
+
+#         # ------------- Link scorer --------------------------
+#         self.edge_predictor = EdgePredictor_per_node(dim_in=self.eff_D,
+#                                                      dim_hidden=max(100, self.enc_out))
+#         self.criterion = nn.BCEWithLogitsLoss(reduction='none')
+
+#         # ------------- Memory knobs -------------------------
+#         self.use_memory    = use_memory
+#         self.shared_memory = shared_memory
+#         self.consistency_coef = consistency_coef
+#         self.half_life = half_life
+
+#         if self.use_memory:
+#             if self.shared_memory:
+#                 self.node_memory = NodeMemory(num_nodes, self.eff_D)
+#             else:
+#                 self.node_memory1 = NodeMemory(num_nodes, self.eff_D)
+#                 self.node_memory2 = NodeMemory(num_nodes, self.eff_D)
+#             self.mem_fuse = GatedMemoryFusion(self.eff_D)
+
+#         self.reset_parameters()
+
+#     # ---------- small helpers to avoid duplication ----------
+#     @staticmethod
+#     def _layout_bounds(total_rows: int, neg_samples: int):
+#         """
+#         Given total rows in x and neg_samples, return block boundaries.
+#         Layout: [src1 | pos1 | neg1 | src2 | pos2 | neg2]
+#         """
+#         num_edge = total_rows // (2 * neg_samples + 4)
+#         base1     = num_edge
+#         base_pos1 = base1 + num_edge
+#         base_neg1 = base_pos1 + num_edge * neg_samples
+#         base2     = 2 * num_edge + num_edge * neg_samples
+#         base_pos2 = base2 + num_edge
+#         base_neg2 = base_pos2 + num_edge
+#         end_all   = base_neg2 + num_edge * neg_samples
+#         return num_edge, base1, base_pos1, base_neg1, base2, base_pos2, base_neg2, end_all
+
+#     @staticmethod
+#     def _neg_rows(idx: torch.Tensor, neg_samples: int, device: torch.device):
+#         """
+#         Build the flattened row indices [i*neg ... (i+1)*neg-1] for each i in idx.
+#         """
+#         if idx.numel() == 0 or neg_samples <= 0:
+#             return torch.empty(0, dtype=torch.long, device=device)
+#         rows = []
+#         for i in idx.tolist():
+#             rows.extend(range(i * neg_samples, (i + 1) * neg_samples))
+#         return torch.as_tensor(rows, dtype=torch.long, device=device)
+
+#     # --------------------------------------------------------
+#     def reset_parameters(self):
+#         if self.time_feats_dim > 0:
+#             self.base_model.reset_parameters()
+#         self.edge_predictor.reset_parameters()
+#         # dynamics weights already at 0.0
+
+#     def forward(self, model_inputs, neg_samples, node_feats):
+#         # trailing: ..., pos_edge_label, src_ids1, src_ids2, src_ts1, src_ts2
+#         pos_edge_label = model_inputs[-5].view(-1).float()
+#         src_ids1, src_ids2 = model_inputs[-4], model_inputs[-3]
+#         src_ts1,  src_ts2  = model_inputs[-2], model_inputs[-1]  # [B] raw timestamps
+#         base_inputs = model_inputs[:-5]
+
+#         # ---- predict (returns x_cache for extras/updates) ----
+#         pred_true, pred_false, pred_neg, idx1, idx2, x_cache = self.predict(
+#             base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2
+#         )
+
+#         # empty batch guard
+#         if pred_true.numel() == 0 and pred_false.numel() == 0:
+#             device = pos_edge_label.device
+#             loss = torch.tensor(0.0, device=device, requires_grad=True)
+#             return loss, torch.empty(0, device=device), torch.empty(0, device=device)
+
+#         # ---- add (1)-(3) dynamics to logits -----------------
+#         num_edge, base1, base_pos1, base_neg1, base2, base_pos2, base_neg2, end_all = \
+#             self._layout_bounds(x_cache.shape[0], neg_samples)
+
+#         if idx1.numel() > 0:
+#             # (1) node propensity bias b[u]
+#             b1_all = self.prop1.get(src_ids1[:num_edge])  # [num_edge]
+#             b2_all = self.prop2.get(src_ids2[:num_edge])  # [num_edge]
+#             b_mean = 0.5 * (b1_all.index_select(0, idx1) + b2_all.index_select(0, idx2))  # [K]
+
+#             # (2) recency feature log(1+Δt)
+#             dt1_all = self.rec1.get_dt(src_ids1[:num_edge], src_ts1[:num_edge])
+#             dt2_all = self.rec2.get_dt(src_ids2[:num_edge], src_ts2[:num_edge])
+#             dt_mean = 0.5 * (dt1_all.index_select(0, idx1) + dt2_all.index_select(0, idx2))  # [K]
+#             rec_feat = torch.log1p(dt_mean)
+
+#             # (3) preference dot with current pos dst embeddings
+#             m1 = self.pref1.get(src_ids1[:num_edge]).index_select(0, idx1)  # [K, D]
+#             m2 = self.pref2.get(src_ids2[:num_edge]).index_select(0, idx2)  # [K, D]
+#             h_pos1 = x_cache[base1:base_pos1].index_select(0, idx1)         # [K, D]
+#             h_pos2 = x_cache[base_pos2:base_pos2+num_edge].index_select(0, idx2)  # [K, D]
+#             pref_dot = 0.5 * ((m1 * h_pos1).sum(-1) + (m2 * h_pos2).sum(-1))      # [K]
+
+#             extras = (self.w_b * b_mean + self.w_r * rec_feat + self.alpha_pref * pref_dot)  # [K]
+
+#             # split to true / false
+#             y_pos = pos_edge_label.index_select(0, idx1).view(-1, 1)
+#             mask_true  = (y_pos == 1).view(-1)
+#             mask_false = (y_pos == 0).view(-1)
+
+#             if pred_true.numel() > 0:
+#                 pred_true  = pred_true  + extras[mask_true].view(-1, 1)
+#             if pred_false.numel() > 0:
+#                 pred_false = pred_false + extras[mask_false].view(-1, 1)
+
+#             # negatives (3 stacks): reuse same per-src extras, and preference against neg dst
+#             if pred_neg.numel() > 0 and neg_samples > 0:
+#                 rows1 = self._neg_rows(idx1, neg_samples, x_cache.device)
+#                 rows2 = self._neg_rows(idx2, neg_samples, x_cache.device)
+#                 K = idx1.size(0)
+
+#                 b_rep   = b_mean.unsqueeze(1).expand(K, neg_samples).reshape(-1)   # [K*neg]
+#                 rec_rep = rec_feat.unsqueeze(1).expand(K, neg_samples).reshape(-1) # [K*neg]
+
+#                 m1_rep = m1.unsqueeze(1).expand(K, neg_samples, m1.size(1)).reshape(-1, m1.size(1))
+#                 m2_rep = m2.unsqueeze(1).expand(K, neg_samples, m2.size(1)).reshape(-1, m2.size(1))
+
+#                 h_neg1 = x_cache[base_neg1:base_neg1 + num_edge * neg_samples].index_select(0, rows1)
+#                 h_neg2 = x_cache[base_neg2:end_all].index_select(0, rows2)
+
+#                 pref_neg1 = (m1_rep * h_neg1).sum(-1)
+#                 pref_neg2 = (m2_rep * h_neg2).sum(-1)
+#                 pref_neg3 = 0.5 * ((m1_rep * h_neg1).sum(-1) + (m2_rep * h_neg2).sum(-1))
+
+#                 extras_neg = torch.cat([
+#                     self.w_b * b_rep + self.w_r * rec_rep + self.alpha_pref * pref_neg1,
+#                     self.w_b * b_rep + self.w_r * rec_rep + self.alpha_pref * pref_neg2,
+#                     self.w_b * b_rep + self.w_r * rec_rep + self.alpha_pref * pref_neg3
+#                 ], dim=0).view(-1, 1)
+
+#                 pred_neg = pred_neg + extras_neg
+
+#         # ---- optional negative undersampling (kept) ----------
+#         if pred_neg.numel() > 0:
+#             target_neg = pred_true.size(0) + pred_false.size(0)
+#             if target_neg > 0 and pred_neg.size(0) > target_neg:
+#                 gen = torch.Generator(device=pred_neg.device).manual_seed(4242)
+#                 keep = torch.randperm(pred_neg.size(0), generator=gen, device=pred_neg.device)[:target_neg]
+#                 pred_neg = pred_neg.index_select(0, keep)
+
+#         # ---- loss --------------------------------------------
+#         loss_true  = self.criterion(pred_true,  torch.ones_like(pred_true)).mean() if pred_true.numel()  > 0 else 0.0
+#         loss_false = self.criterion(pred_false, torch.zeros_like(pred_false)).mean() if pred_false.numel() > 0 else 0.0
+#         loss_neg   = self.criterion(pred_neg,   torch.zeros_like(pred_neg)).mean()   if pred_neg.numel()   > 0 else 0.0
+#         loss = loss_true + loss_false + loss_neg
+
+#         all_pred  = torch.cat([pred_true, pred_false, pred_neg], dim=0)
+#         all_label = torch.cat([torch.ones_like(pred_true),
+#                                torch.zeros_like(pred_false),
+#                                torch.zeros_like(pred_neg)], dim=0)
+
+#         # ---- updates: memory + dynamics ----------------------
+#         if idx1.numel() > 0:
+#             with torch.no_grad():
+#                 # original node memory (positives only)
+#                 if self.use_memory and pred_true.numel() > 0:
+#                     mask_true = (pos_edge_label.index_select(0, idx1).view(-1, 1) == 1)
+#                     up_idx1   = idx1[mask_true.view(-1)]
+#                     up_idx2   = idx2[mask_true.view(-1)]
+
+#                     h_src1_now = x_cache[:num_edge]
+#                     h_src2_now = x_cache[base2 : base2 + num_edge]
+
+#                     up_ts1 = src_ts1.index_select(0, up_idx1)
+#                     up_ts2 = src_ts2.index_select(0, up_idx2)
+
+#                     if self.shared_memory:
+#                         self.node_memory.ema_update(src_ids1.index_select(0, up_idx1),
+#                                                     h_src1_now.index_select(0, up_idx1),
+#                                                     ts=up_ts1, half_life=self.half_life)
+#                         self.node_memory.ema_update(src_ids2.index_select(0, up_idx2),
+#                                                     h_src2_now.index_select(0, up_idx2),
+#                                                     ts=up_ts2, half_life=self.half_life)
+#                     else:
+#                         self.node_memory1.ema_update(src_ids1.index_select(0, up_idx1),
+#                                                      h_src1_now.index_select(0, up_idx1),
+#                                                      ts=up_ts1, half_life=self.half_life)
+#                         self.node_memory2.ema_update(src_ids2.index_select(0, up_idx2),
+#                                                      h_src2_now.index_select(0, up_idx2),
+#                                                      ts=up_ts2, half_life=self.half_life)
+
+#                 # dynamics: propensity (all aligned), preference (positives), recency (all aligned)
+#                 y_pos_aligned = pos_edge_label.index_select(0, idx1).float()
+
+#                 self.prop1.ema_update(src_ids1.index_select(0, idx1), y_pos_aligned,
+#                                       src_ts1.index_select(0, idx1), half_life=self.half_life)
+#                 self.prop2.ema_update(src_ids2.index_select(0, idx2), y_pos_aligned,
+#                                       src_ts2.index_select(0, idx2), half_life=self.half_life)
+
+#                 mask_true_up = (y_pos_aligned == 1)
+#                 if torch.any(mask_true_up):
+#                     up_idx1p = idx1[mask_true_up]
+#                     up_idx2p = idx2[mask_true_up]
+#                     dst1_pos_now = x_cache[base1:base_pos1].index_select(0, up_idx1p)
+#                     dst2_pos_now = x_cache[base_pos2:base_pos2+num_edge].index_select(0, up_idx2p)
+#                     self.pref1.ema_update(src_ids1.index_select(0, up_idx1p), dst1_pos_now,
+#                                           src_ts1.index_select(0, up_idx1p), half_life=self.half_life)
+#                     self.pref2.ema_update(src_ids2.index_select(0, up_idx2p), dst2_pos_now,
+#                                           src_ts2.index_select(0, up_idx2p), half_life=self.half_life)
+
+#                 self.rec1.update_src(src_ids1.index_select(0, idx1), src_ts1.index_select(0, idx1))
+#                 self.rec2.update_src(src_ids2.index_select(0, idx2), src_ts2.index_select(0, idx2))
+
+#         # optional cross-memory consistency (non-shared only)
+#         if self.use_memory and not self.shared_memory and idx1.numel() > 0:
+#             m1 = self.node_memory1.get(src_ids1.index_select(0, idx1))
+#             m2 = self.node_memory2.get(src_ids2.index_select(0, idx2))
+#             loss = loss + self.consistency_coef * torch.mean((m1 - m2) ** 2)
+
+#         return loss, all_pred, all_label
+
+#     def predict(self, base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2):
+#         # ---- encoder ----
+#         if self.time_feats_dim > 0 and self.node_feats_dim == 0:
+#             x = self.base_model(*base_inputs)
+#         elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
+#             x = self.base_model(*base_inputs)
+#             x = torch.cat([x, node_feats], dim=1)
+#         elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
+#             x = node_feats
+#         else:
+#             raise ValueError('Either dim_in_time or dim_in_node must be > 0')
+
+#         # ---- memory fusion on source slices (if enabled) ----
+#         num_edge, _, _, _, base2, _, _, _ = self._layout_bounds(x.shape[0], neg_samples)
+#         if self.use_memory:
+#             if self.shared_memory:
+#                 m1 = self.node_memory.get(src_ids1[:num_edge])
+#                 m2 = self.node_memory.get(src_ids2[:num_edge])
+#                 x[:num_edge]            = self.mem_fuse(x[:num_edge],            m1)
+#                 x[base2:base2+num_edge] = self.mem_fuse(x[base2:base2+num_edge], m2)
+#             else:
+#                 m1 = self.node_memory1.get(src_ids1[:num_edge])
+#                 m2 = self.node_memory2.get(src_ids2[:num_edge])
+#                 x[:num_edge]            = self.mem_fuse(x[:num_edge],            m1)
+#                 x[base2:base2+num_edge] = self.mem_fuse(x[base2:base2+num_edge], m2)
+
+#         # ---- edge predictor ----
+#         pred_true, pred_false, pred_neg, idx1, idx2 = self.edge_predictor(
+#             x, pos_edge_label, neg_samples=neg_samples, src_ids1=src_ids1, src_ids2=src_ids2
+#         )
+#         return pred_true, pred_false, pred_neg, idx1, idx2, x
+
+
+
+
+#     """
+#     A simplified Dual_Interface that retains three light-weight dynamics: Propensity, Preference, Recency.
+#     """
+
+#     def __init__(self,
+#                  mlp_mixer_configs,
+#                  edge_predictor_configs,
+#                  num_nodes,
+#                  mem_dim,                    # kept for BC; unused
+#                  half_life: float = 40.0,
+#                  enable_propensity: bool = False,
+#                  enable_preference: bool = True,
+#                  enable_recency: bool = False):
+#         super().__init__()
+
+#         # -------- encoder dims --------
+#         self.time_feats_dim = edge_predictor_configs['dim_in_time']
+#         self.node_feats_dim = edge_predictor_configs['dim_in_node']
+#         if self.time_feats_dim > 0:
+#             self.base_model = Patch_Encoding(**mlp_mixer_configs)
+
+#         self.enc_out = mlp_mixer_configs['out_channels']
+#         self.eff_D   = self.enc_out + (self.node_feats_dim if self.node_feats_dim > 0 else 0)
+
+#         # -------- light-weight dynamics --------
+#         self.enable_propensity = enable_propensity
+#         self.enable_preference = enable_preference
+#         self.enable_recency    = enable_recency
+
+#         if self.enable_propensity:
+#             self.prop1 = NodePropensity(num_nodes)
+#             self.prop2 = NodePropensity(num_nodes)
+#             self.w_b   = nn.Parameter(torch.tensor(0.0))  # weight on propensity
+#         else:
+#             self.register_parameter('w_b', None)
+
+#         if self.enable_preference:
+#             self.pref1 = PreferenceMemory(num_nodes, self.eff_D)
+#             self.pref2 = PreferenceMemory(num_nodes, self.eff_D)
+#             self.alpha_pref = nn.Parameter(torch.tensor(0.0))  # weight on pref·dst
+#         else:
+#             self.register_parameter('alpha_pref', None)
+
+#         if self.enable_recency:
+#             self.rec1  = RecencyTracker(num_nodes, default_dt=1.0)
+#             self.rec2  = RecencyTracker(num_nodes, default_dt=1.0)
+#             self.w_r   = nn.Parameter(torch.tensor(0.0))  # weight on log1p(Δt)
+#         else:
+#             self.register_parameter('w_r', None)
+
+#         # -------- link scorer --------
+#         self.edge_predictor = EdgePredictor_per_node(dim_in=self.eff_D,
+#                                                      dim_hidden=max(100, self.enc_out))
+#         self.criterion = nn.BCEWithLogitsLoss(reduction='none')
+#         self.half_life = half_life
+
+#         self.reset_parameters()
+
+#     # ---------- helpers ----------
+#     @staticmethod
+#     def _layout_bounds(total_rows: int, neg_samples: int):
+#         # Layout: [src1 | pos1 | neg1 | src2 | pos2 | neg2]
+#         num_edge = total_rows // (2 * neg_samples + 4)
+#         base1     = num_edge
+#         base_pos1 = base1 + num_edge
+#         base_neg1 = base_pos1 + num_edge * neg_samples
+#         base2     = 2 * num_edge + num_edge * neg_samples
+#         base_pos2 = base2 + num_edge
+#         base_neg2 = base_pos2 + num_edge
+#         end_all   = base_neg2 + num_edge * neg_samples
+#         return num_edge, base1, base_pos1, base_neg1, base2, base_pos2, base_neg2, end_all
+
+#     @staticmethod
+#     def _neg_rows(idx: torch.Tensor, neg_samples: int, device: torch.device):
+#         if idx.numel() == 0 or neg_samples <= 0:
+#             return torch.empty(0, dtype=torch.long, device=device)
+#         rows = []
+#         for i in idx.tolist():
+#             rows.extend(range(i * neg_samples, (i + 1) * neg_samples))
+#         return torch.as_tensor(rows, dtype=torch.long, device=device)
+
+#     # -----------------------------
+#     def reset_parameters(self):
+#         if self.time_feats_dim > 0:
+#             self.base_model.reset_parameters()
+#         self.edge_predictor.reset_parameters()
+
+#     def forward(self, model_inputs, neg_samples, node_feats):
+#         # trailing: ..., pos_edge_label, src_ids1, src_ids2, src_ts1, src_ts2
+#         pos_edge_label = model_inputs[-5].view(-1).float()
+#         src_ids1, src_ids2 = model_inputs[-4], model_inputs[-3]
+#         src_ts1,  src_ts2  = model_inputs[-2], model_inputs[-1]
+#         base_inputs = model_inputs[:-5]
+
+#         pred_true, pred_false, pred_neg, idx1, idx2, x_cache = self.predict(
+#             base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2
+#         )
+
+#         if pred_true.numel() == 0 and pred_false.numel() == 0:
+#             device = pos_edge_label.device
+#             loss = torch.tensor(0.0, device=device, requires_grad=True)
+#             return loss, torch.empty(0, device=device), torch.empty(0, device=device)
+
+#         # ----- add PPR extras -----
+#         num_edge, base1, base_pos1, base_neg1, base2, base_pos2, base_neg2, end_all = \
+#             self._layout_bounds(x_cache.shape[0], neg_samples)
+
+#         if idx1.numel() > 0:
+#             K = idx1.size(0)
+#             extras_true  = None
+#             extras_false = None
+
+#             # collect per-src stats (each optional)
+#             if self.enable_propensity:
+#                 b1_all = self.prop1.get(src_ids1[:num_edge])
+#                 b2_all = self.prop2.get(src_ids2[:num_edge])
+#                 b_mean = 0.5 * (b1_all.index_select(0, idx1) + b2_all.index_select(0, idx2))  # [K]
+#             else:
+#                 b_mean = None
+
+#             if self.enable_recency:
+#                 dt1_all = self.rec1.get_dt(src_ids1[:num_edge], src_ts1[:num_edge])
+#                 dt2_all = self.rec2.get_dt(src_ids2[:num_edge], src_ts2[:num_edge])
+#                 rec_feat = torch.log1p(0.5 * (dt1_all.index_select(0, idx1) + dt2_all.index_select(0, idx2)))  # [K]
+#             else:
+#                 rec_feat = None
+
+#             if self.enable_preference:
+#                 m1 = self.pref1.get(src_ids1[:num_edge]).index_select(0, idx1)  # [K, D]
+#                 m2 = self.pref2.get(src_ids2[:num_edge]).index_select(0, idx2)  # [K, D]
+#                 h_pos1 = x_cache[base1:base_pos1].index_select(0, idx1)         # [K, D]
+#                 h_pos2 = x_cache[base_pos2:base_pos2+num_edge].index_select(0, idx2)  # [K, D]
+#                 pref_dot = 0.5 * ((m1 * h_pos1).sum(-1) + (m2 * h_pos2).sum(-1))     # [K]
+#             else:
+#                 pref_dot = None
+
+#             # assemble extras = w_b*b + w_r*rec + alpha_pref*pref_dot
+#             extras_aligned = torch.zeros(K, device=x_cache.device)
+#             if b_mean is not None:
+#                 extras_aligned = extras_aligned + self.w_b * b_mean
+#             if rec_feat is not None:
+#                 extras_aligned = extras_aligned + self.w_r * rec_feat
+#             if pref_dot is not None:
+#                 extras_aligned = extras_aligned + self.alpha_pref * pref_dot
+
+#             # split to true/false
+#             y_pos = pos_edge_label.index_select(0, idx1).view(-1, 1)
+#             mask_true  = (y_pos == 1).view(-1)
+#             mask_false = (y_pos == 0).view(-1)
+
+#             if pred_true.numel() > 0:
+#                 pred_true  = pred_true  + extras_aligned[mask_true].view(-1, 1)
+#             if pred_false.numel() > 0:
+#                 pred_false = pred_false + extras_aligned[mask_false].view(-1, 1)
+
+#             # negatives if present (3 stacks)
+#             if pred_neg.numel() > 0 and neg_samples > 0:
+#                 rows1 = self._neg_rows(idx1, neg_samples, x_cache.device)
+#                 rows2 = self._neg_rows(idx2, neg_samples, x_cache.device)
+
+#                 extras_neg = torch.zeros(3 * K * neg_samples, device=x_cache.device)
+
+#                 if self.enable_propensity or self.enable_recency:
+#                     # expand scalar per-src features across K*neg rows
+#                     if self.enable_propensity:
+#                         b_rep = b_mean.unsqueeze(1).expand(K, neg_samples).reshape(-1)
+#                         extras_neg += self.w_b * b_rep.repeat(3)
+#                     if self.enable_recency:
+#                         r_rep = rec_feat.unsqueeze(1).expand(K, neg_samples).reshape(-1)
+#                         extras_neg += self.w_r * r_rep.repeat(3)
+
+#                 if self.enable_preference:
+#                     m1_rep = m1.unsqueeze(1).expand(K, neg_samples, m1.size(1)).reshape(-1, m1.size(1))
+#                     m2_rep = m2.unsqueeze(1).expand(K, neg_samples, m2.size(1)).reshape(-1, m2.size(1))
+#                     h_neg1 = x_cache[base_neg1:base_neg1 + num_edge * neg_samples].index_select(0, rows1)
+#                     h_neg2 = x_cache[base_neg2:end_all].index_select(0, rows2)
+#                     pref_neg1 = (m1_rep * h_neg1).sum(-1)
+#                     pref_neg2 = (m2_rep * h_neg2).sum(-1)
+#                     pref_neg3 = 0.5 * ((m1_rep * h_neg1).sum(-1) + (m2_rep * h_neg2).sum(-1))
+#                     extras_neg += self.alpha_pref * torch.cat([pref_neg1, pref_neg2, pref_neg3], dim=0)
+
+#                 pred_neg = pred_neg + extras_neg.view(-1, 1)
+
+#         # optional undersampling as before
+#         if pred_neg.numel() > 0:
+#             target_neg = pred_true.size(0) + pred_false.size(0)
+#             if target_neg > 0 and pred_neg.size(0) > target_neg:
+#                 gen = torch.Generator(device=pred_neg.device).manual_seed(4242)
+#                 keep = torch.randperm(pred_neg.size(0), generator=gen, device=pred_neg.device)[:target_neg]
+#                 pred_neg = pred_neg.index_select(0, keep)
+
+#         # loss
+#         loss_true  = self.criterion(pred_true,  torch.ones_like(pred_true)).mean() if pred_true.numel()  > 0 else 0.0
+#         loss_false = self.criterion(pred_false, torch.zeros_like(pred_false)).mean() if pred_false.numel() > 0 else 0.0
+#         loss_neg   = self.criterion(pred_neg,   torch.zeros_like(pred_neg)).mean()   if pred_neg.numel()   > 0 else 0.0
+#         loss = loss_true + loss_false + loss_neg
+
+#         all_pred  = torch.cat([pred_true, pred_false, pred_neg], dim=0)
+#         all_label = torch.cat([torch.ones_like(pred_true),
+#                                torch.zeros_like(pred_false),
+#                                torch.zeros_like(pred_neg)], dim=0)
+
+#         # updates for PPR (no heavy memory)
+#         if idx1.numel() > 0:
+#             with torch.no_grad():
+#                 y_pos_aligned = pos_edge_label.index_select(0, idx1).float()
+#                 if self.enable_propensity:
+#                     self.prop1.ema_update(src_ids1.index_select(0, idx1), y_pos_aligned,
+#                                           src_ts1.index_select(0, idx1), half_life=self.half_life)
+#                     self.prop2.ema_update(src_ids2.index_select(0, idx2), y_pos_aligned,
+#                                           src_ts2.index_select(0, idx2), half_life=self.half_life)
+
+#                 if self.enable_preference:
+#                     mask_true_up = (y_pos_aligned == 1)
+#                     if torch.any(mask_true_up):
+#                         up_idx1p = idx1[mask_true_up]
+#                         up_idx2p = idx2[mask_true_up]
+#                         dst1_pos_now = x_cache[self._layout_bounds(x_cache.shape[0], neg_samples)[1]:
+#                                                self._layout_bounds(x_cache.shape[0], neg_samples)[2]].index_select(0, up_idx1p)
+#                         dst2_pos_now = x_cache[self._layout_bounds(x_cache.shape[0], neg_samples)[5]:
+#                                                self._layout_bounds(x_cache.shape[0], neg_samples)[5] + self._layout_bounds(x_cache.shape[0], neg_samples)[0]].index_select(0, up_idx2p)
+#                         self.pref1.ema_update(src_ids1.index_select(0, up_idx1p), dst1_pos_now,
+#                                               src_ts1.index_select(0, up_idx1p), half_life=self.half_life)
+#                         self.pref2.ema_update(src_ids2.index_select(0, up_idx2p), dst2_pos_now,
+#                                               src_ts2.index_select(0, up_idx2p), half_life=self.half_life)
+
+#                 if self.enable_recency:
+#                     self.rec1.update_src(src_ids1.index_select(0, idx1), src_ts1.index_select(0, idx1))
+#                     self.rec2.update_src(src_ids2.index_select(0, idx2), src_ts2.index_select(0, idx2))
+
+#         return loss, all_pred, all_label
+
+#     def predict(self, base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2):
+#         # encoder (unchanged)
+#         if self.time_feats_dim > 0 and self.node_feats_dim == 0:
+#             x = self.base_model(*base_inputs)
+#         elif self.time_feats_dim > 0 and self.node_feats_dim > 0:
+#             x = self.base_model(*base_inputs)
+#             x = torch.cat([x, node_feats], dim=1)
+#         elif self.time_feats_dim == 0 and self.node_feats_dim > 0:
+#             x = node_feats
+#         else:
+#             raise ValueError('Either dim_in_time or dim_in_node must be > 0')
+
+#         pred_true, pred_false, pred_neg, idx1, idx2 = self.edge_predictor(
+#             x, pos_edge_label, neg_samples=neg_samples, src_ids1=src_ids1, src_ids2=src_ids2
+#         )
+#         return pred_true, pred_false, pred_neg, idx1, idx2, x

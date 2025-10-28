@@ -1,4 +1,5 @@
 import argparse
+from email import parser
 # from utils import set_seed, load_feat, load_graph
 from data_process_utils import check_data_leakage
 import pandas as pd
@@ -26,7 +27,7 @@ def print_model_info(model):
 
 def get_args():
     parser=argparse.ArgumentParser()
-    parser.add_argument('--data', type=str, default='FILT_HB', help="Base directory for the data files")
+    parser.add_argument('--data', type=str, default='FILT_HB', help="data directory")
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--epochs', type=int, default=300)
@@ -56,8 +57,11 @@ def get_args():
     parser.add_argument('--ignore_edge_feats', action='store_true')
     parser.add_argument('--use_node_feats', action='store_true')
     parser.add_argument('--use_pair_index', action='store_true')
-    parser.add_argument('--no_memory', action='store_true', help='Disable persistent node memory')
-    parser.add_argument('--enable_preference', action='store_true', help='Disable')
+    parser.add_argument('--enable_preference', dest='enable_preference', action='store_true',
+                    help='Enable preference memory (default: True)')
+    parser.add_argument('--disable_preference', dest='enable_preference', action='store_false',
+                        help='Disable preference memory')
+    parser.set_defaults(enable_preference=True)
 
     parser.add_argument('--use_graph_structure', action='store_true')
     parser.add_argument('--structure_time_gap', type=int, default=2000)
@@ -110,6 +114,10 @@ def load_all_data(args):
 
     args.num_nodes1 = max(int(df1['src'].max()), int(df1['dst'].max())) + 1
     args.num_nodes2 = max(int(df2['src'].max()), int(df2['dst'].max())) + 1
+
+    # args.num_nodes1 = df1['src'].nunique() + df1['dst'].nunique()
+    # args.num_nodes2 = df2['src'].nunique() + df2['dst'].nunique()
+
     args.num_edges = len(df1) # the number of edges are same for both datasets
 
     print('Train %d, Valid %d, Test %d'%(args.train_edge_end, 
@@ -193,7 +201,7 @@ def load_model_dual(args):
     }
 
     if args.model == 'DLP':
-        from model import Dual_Interface, Dual_Interface_LitePPR, Dual_Interface_Pref
+        from model import Dual_Interface_Pref
         from dual_link_pred_train_utils import link_pred_train_dual
 
         mixer_configs = {
@@ -211,9 +219,9 @@ def load_model_dual(args):
     else:
         raise NotImplementedError(f"Model {args.model} is not implemented.")
 
-    # === memory-aware interface args ===
+
     # node IDs are consistent across datasets
-    num_nodes = max(args.num_nodes1, args.num_nodes2)
+    num_nodes = min(args.num_nodes1, args.num_nodes2)
 
 #     model = Dual_Interface(
 #     mixer_configs,
@@ -227,7 +235,7 @@ def load_model_dual(args):
     model = Dual_Interface_Pref(
     mixer_configs,
     edge_predictor_configs,
-    num_nodes=args.num_nodes1,
+    num_nodes=num_nodes,
     enable_preference=args.enable_preference
 )
 

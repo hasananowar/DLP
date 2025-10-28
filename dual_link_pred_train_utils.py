@@ -170,7 +170,7 @@ def run_dual(model, optimizer, args,
         subgraph_edge_feats2 = get_subgraph_edge_feats(edge_feats2, subgraph_data2, subgraph_edts2, args.edge_feat_dims, args.device)
         merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)
 
-        # Node features (optional graph structure path)
+        # Node features
         if args.use_graph_structure and node_feats is not None:
             num_of_df_links1 = len(subgraph_data_list1) // (cached_neg_samples1 + 2)
             subgraph_node_feats1 = compute_sign_feats(node_feats[:args.num_nodes1], df1, cur_inds1, num_of_df_links1,

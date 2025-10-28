@@ -221,7 +221,7 @@ def run_dual(model, optimizer, args,
         else:
             merged_node_feats = torch.cat([subgraph_node_feats1, subgraph_node_feats2], dim=0)
 
-        # Edge labels for dataset2 (mask)
+        # Edge labels 
         mask = (elabel2[ind] == 1)
         subgraph_edge_type = torch.from_numpy(mask.astype(np.int64)).to(args.device)
 

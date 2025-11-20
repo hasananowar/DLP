@@ -1,5 +1,4 @@
 import argparse
-from email import parser
 # from utils import set_seed, load_feat, load_graph
 from data_process_utils import check_data_leakage
 import pandas as pd
@@ -56,12 +55,15 @@ def get_args():
     parser.add_argument('--node_feats_as_edge_feats', action='store_true')
     parser.add_argument('--ignore_edge_feats', action='store_true')
     parser.add_argument('--use_node_feats', action='store_true')
-    parser.add_argument('--use_pair_index', action='store_true')
     parser.add_argument('--enable_preference', dest='enable_preference', action='store_true',
                     help='Enable preference memory (default: True)')
     parser.add_argument('--disable_preference', dest='enable_preference', action='store_false',
                         help='Disable preference memory')
     parser.set_defaults(enable_preference=True)
+    parser.add_argument('--use_atomic_group', action='store_true')
+    parser.add_argument('--use_embedding', action='store_true',
+                    help='Use nn.Embedding instead of one-hot')
+    parser.add_argument('--emb_dim', type=int, default=100)
 
     parser.add_argument('--use_graph_structure', action='store_true')
     parser.add_argument('--structure_time_gap', type=int, default=2000)
@@ -146,32 +148,41 @@ def load_all_data(args):
         node_feats = None
         node_feat_dims = 0
 
-    if args.use_pair_index:
-        num_pair_index = max(df1['dst_idx'].max(), df2['dst_idx'].max()) + 1 
+    # Atomic Group Encoding
+    pair_feats_combined1 = pair_feats_combined2 = None
+    if args.use_atomic_group:
+        num_pair_index = int(max(df1['dst_idx'].max(), df2['dst_idx'].max()) + 1)
 
-        pair_index1 = torch.tensor(df1.dst_idx.values, dtype=torch.long)
-        pair_index2 = torch.tensor(df2.dst_idx.values, dtype=torch.long)
+        if getattr(args, 'use_embedding', False):
+            # Save info for embedding path (indices only; actual embeddings used later in run_dual)
+            args.num_pair_index = num_pair_index
+            args.pair_index1 = torch.tensor(df1.dst_idx.values, dtype=torch.long)
+            args.pair_index2 = torch.tensor(df2.dst_idx.values, dtype=torch.long)
 
-        # One-hot encode the indices 
-        pair_feats1 = torch.nn.functional.one_hot(pair_index1, num_classes=num_pair_index).float()
-        pair_feats2 = torch.nn.functional.one_hot(pair_index2, num_classes=num_pair_index).float()
+            edge_feat1_dims = edge_feat2_dims = 2 * args.emb_dim
+            edge_feats1 = None
+            edge_feats2 = None
+            print(f'Embedding path: num_pair_index={num_pair_index}, edge_feat_dims={edge_feat1_dims}')
+        else:
+            # One-hot path
+            pair_index1 = torch.tensor(df1.dst_idx.values, dtype=torch.long)
+            pair_index2 = torch.tensor(df2.dst_idx.values, dtype=torch.long)
+            pair_feats1 = torch.nn.functional.one_hot(pair_index1, num_classes=num_pair_index).float()
+            pair_feats2 = torch.nn.functional.one_hot(pair_index2, num_classes=num_pair_index).float()
+            pair_diff1 = torch.abs(pair_feats1 - pair_feats2)
+            pair_mul1  = pair_feats1 * pair_feats2
+            pair_diff2 = torch.abs(pair_feats2 - pair_feats1)
+            pair_mul2  = pair_feats2 * pair_feats1
+            pair_feats_combined1 = torch.cat([pair_diff1, pair_mul1], dim=1)
+            pair_feats_combined2 = torch.cat([pair_diff2, pair_mul2], dim=1)
+            edge_feats1 = pair_feats_combined1
+            edge_feats2 = pair_feats_combined2
+            edge_feat1_dims = edge_feats1.size(1)
+            edge_feat2_dims = edge_feats2.size(1)
 
-        #################### 
-        pair_diff1 = torch.abs(pair_feats1 - pair_feats2)   
-        pair_mul1 = pair_feats1 * pair_feats2              
-        pair_diff2 = torch.abs(pair_feats2 - pair_feats1)
-        pair_mul2 = pair_feats2 * pair_feats1
+    # Report dims robustly
+    print('Final Edge 1 feat dim: %d, Final Edge 2 feat dim: %d' % (edge_feat1_dims, edge_feat2_dims))
 
-        pair_feats_combined1 = torch.cat([pair_diff1, pair_mul1], dim=1)
-        pair_feats_combined2 = torch.cat([pair_diff2, pair_mul2], dim=1)
-        ####################
-        print('Pair embedding feature dim 1: %d, feature dim 2: %d' % (pair_feats_combined1.size(1), pair_feats_combined2.size(1)))
-
-        edge_feats1 = pair_feats_combined1
-        edge_feats2 = pair_feats_combined2
-        edge_feat1_dims = edge_feats1.size(1)
-        edge_feat2_dims = edge_feats2.size(1)
-        print('Final Edge 1 feat dim: %d, Final Edge 2 feat dim: %d' % (edge_feat1_dims, edge_feat2_dims))
 
     # Data leakage check 
     if args.check_data_leakage:
@@ -179,7 +190,12 @@ def load_all_data(args):
         check_data_leakage(args, g2, df2)
     
     args.node_feat_dims = node_feat_dims
-    args.edge_feat_dims = max(edge_feat1_dims, edge_feat2_dims)
+    if args.use_atomic_group and getattr(args, 'use_embedding', False):
+        args.edge_feat_dims = 2 * args.emb_dim
+    elif edge_feats1 is not None and edge_feats2 is not None:
+        args.edge_feat_dims = max(edge_feat1_dims, edge_feat2_dims)
+    else:
+        args.edge_feat_dims = 0
     
     # Move features to device
     if node_feats is not None:
@@ -192,7 +208,7 @@ def load_all_data(args):
     return node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args
 
 
-def load_model_dual(args):
+def load_model(args):
     # Define edge predictor configurations
     edge_predictor_configs = {
         'dim_in_time': args.time_dims,
@@ -201,7 +217,7 @@ def load_model_dual(args):
     }
 
     if args.model == 'DLP':
-        from model import Dual_Interface_Pref
+        from model import Dual_Interface
         from dual_link_pred_train_utils import link_pred_train_dual
 
         mixer_configs = {
@@ -223,24 +239,26 @@ def load_model_dual(args):
     # node IDs are consistent across datasets
     num_nodes = min(args.num_nodes1, args.num_nodes2)
 
-#     model = Dual_Interface(
-#     mixer_configs,
-#     edge_predictor_configs,
-#     num_nodes=args.num_nodes1,
-#     mem_dim=args.hidden_dims,
-#     use_memory=not args.no_memory,
-#     shared_memory=args.shared_memory
-# )
-
-    model = Dual_Interface_Pref(
+    model = Dual_Interface(
     mixer_configs,
     edge_predictor_configs,
-    num_nodes=num_nodes,
+    num_nodes=args.num_nodes1,
     enable_preference=args.enable_preference
 )
+    
+    # Attach trainable embedding to the model 
+    if getattr(args, 'use_atomic_group', False) and getattr(args, 'use_embedding', False):
+        model.atomic_group_embedding = torch.nn.Embedding(args.num_pair_index, args.emb_dim).to(args.device)
+        # Cache full pair indices on the model 
+        model.register_buffer('pair_index1_full', args.pair_index1.to(args.device))
+        model.register_buffer('pair_index2_full', args.pair_index2.to(args.device))
+    else:
+        model.atomic_group_embedding = None
 
     for k, v in model.named_parameters():
         print(k, v.requires_grad)
+
+    print_model_info(model)
 
     return model, args, link_pred_train_dual
         
@@ -253,7 +271,7 @@ if __name__ == "__main__":
     args.use_graph_structure = True
     #args.ignore_node_feats = True  # We only use graph structure
     # args.use_node_feats = True # Use node features
-    #args.use_pair_index = True     # Pair encoding
+    #args.use_atomic_group = True     # Atomic group encoding
     args.use_cached_subgraph = True
 
     print(args)
@@ -271,7 +289,7 @@ if __name__ == "__main__":
         
     ###################################################
     # Load model
-    model, args, link_pred_train_dual = load_model_dual(args)
+    model, args, link_pred_train_dual = load_model(args)
 
     ###################################################
     # Link prediction training

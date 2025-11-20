@@ -114,11 +114,8 @@ def run_dual(model, optimizer, args,
     MLAUPRC.reset()
     MLF1.reset()
 
-    # -----------------------------
-    # Loop
-    # -----------------------------
     for ind in range(len(train_loader1)):
-        # -------- choose mini-batch items deterministically per mode --------
+
         if args.use_cached_subgraph is False and mode == 'train':
             # on-the-fly sampling path
             subgraph_data_list1 = subgraphs1.all_root_nodes[ind]
@@ -135,7 +132,7 @@ def run_dual(model, optimizer, args,
             subgraph_data2 = subgraphs2.mini_batch(ind, mini_batch_inds2)
 
         else:
-            # cached path (valid/test, or train if you cached)
+            # cached path 
             subgraph_data_list1 = subgraphs1[ind]
             subgraph_data_list2 = subgraphs2[ind]
 
@@ -158,16 +155,47 @@ def run_dual(model, optimizer, args,
         subgraph_edts2 = torch.as_tensor(subgraph_data2['edts'], dtype=torch.float32, device=args.device)
         merged_edge_ts = torch.cat([subgraph_edts1, subgraph_edts2], dim=0)
 
-        # Raw edge feats
-        def get_subgraph_edge_feats(edge_feats, subgraph_data, subgraph_edts, edge_feat_dims, device):
-            if edge_feats is not None:
-                eid_tensor = torch.as_tensor(subgraph_data['eid'], dtype=torch.long, device=edge_feats.device)
-                return edge_feats[eid_tensor]
-            else:
-                return torch.zeros((subgraph_edts.shape[0], edge_feat_dims), device=device)
+        eids1 = torch.as_tensor(subgraph_data1['eid'], dtype=torch.long, device=args.device)
+        eids2 = torch.as_tensor(subgraph_data2['eid'], dtype=torch.long, device=args.device)
 
-        subgraph_edge_feats1 = get_subgraph_edge_feats(edge_feats1, subgraph_data1, subgraph_edts1, args.edge_feat_dims, args.device)
-        subgraph_edge_feats2 = get_subgraph_edge_feats(edge_feats2, subgraph_data2, subgraph_edts2, args.edge_feat_dims, args.device)
+        # =============================================================
+        #  Embedding-based edge feature computation (trainable)
+        # =============================================================
+
+        if getattr(model, 'atomic_group_embedding', None) is not None:
+            E1, E2 = eids1.numel(), eids2.numel()
+            emb1 = model.atomic_group_embedding(model.pair_index1_full.index_select(0, eids1))  # [E1, d]
+            emb2 = model.atomic_group_embedding(model.pair_index2_full.index_select(0, eids2))  # [E2, d]
+
+            if E1 == E2:
+                diff12 = (emb1 - emb2).abs(); mul12 = emb1 * emb2
+                diff21 = (emb2 - emb1).abs(); mul21 = emb2 * emb1
+                subgraph_edge_feats1 = torch.cat([diff12, mul12], dim=1)   # [E1, 2d]
+                subgraph_edge_feats2 = torch.cat([diff21, mul21], dim=1)   # [E2, 2d]
+            else:
+                # (optional) print/log once per epoch that E1 != E2 to keep an eye on alignment rate
+                z1 = torch.zeros_like(emb1)
+                z2 = torch.zeros_like(emb2)
+                subgraph_edge_feats1 = torch.cat([emb1, z1], dim=1)  # [E1, 2d]
+                subgraph_edge_feats2 = torch.cat([emb2, z2], dim=1)  # [E2, 2d]
+
+        # =============================================================
+        #  One-hot edge features
+        # =============================================================
+        else:
+            if edge_feats1 is not None:
+                subgraph_edge_feats1 = edge_feats1[eids1]
+            else:
+                subgraph_edge_feats1 = torch.zeros((subgraph_edts1.shape[0], args.edge_feat_dims), device=args.device)
+
+            if edge_feats2 is not None:
+                subgraph_edge_feats2 = edge_feats2[eids2]
+            else:
+                subgraph_edge_feats2 = torch.zeros((subgraph_edts2.shape[0], args.edge_feat_dims), device=args.device)
+        if not model.training:
+            subgraph_edge_feats1 = subgraph_edge_feats1.detach()
+            subgraph_edge_feats2 = subgraph_edge_feats2.detach()
+
         merged_edge_feats = torch.cat([subgraph_edge_feats1, subgraph_edge_feats2], dim=0)
 
         # Node features
@@ -368,8 +396,6 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     # ---- usage ----
     no_params, no_buffers, p_bytes, b_bytes, total_bytes = param_buffer_bytes(model)
 
-
-
     optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     best_auc_model = None
 
@@ -405,7 +431,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         'test_loss': [],
     }
     
-    low_loss = 100000
+    low_loss = float('inf')
     user_train_total_time = 0
     user_epoch_num = 0
     best_epoch = -1
@@ -452,12 +478,14 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
 
         with torch.no_grad():
             valid_auc, valid_ap, valid_f1, valid_loss, time_valid = run_dual(
-                copy.deepcopy(model), None, args, valid_subgraphs1, valid_subgraphs2,
+                copy.deepcopy(model), 
+                None, args, valid_subgraphs1, valid_subgraphs2,
                 df1, df2, node_feats, edge_feats1, edge_feats2,
                 valid_AUROC, valid_AUPRC, valid_F1, mode='valid')
             
             test_auc, test_ap, test_f1, test_loss, time_test = run_dual(
-                copy.deepcopy(model), None, args, test_subgraphs1, test_subgraphs2,
+                copy.deepcopy(model), 
+                None, args, test_subgraphs1, test_subgraphs2,
                 df1, df2, node_feats, edge_feats1, edge_feats2,
                 test_AUROC, test_AUPRC, test_F1, mode='test')
         
@@ -514,7 +542,11 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
 
     save_result_folder = Path("results") / f"preference_{str(args.enable_preference).lower()}" / str(args.data)
     save_result_folder.mkdir(parents=True, exist_ok=True)
-    save_result_path = save_result_folder / f"node{args.use_node_feats}_pair{args.use_pair_index}.json"
+
+    save_result_path = save_result_folder / (
+        f"node{args.use_node_feats}_"
+        f"embed{getattr(args, 'use_embedding', False)}.json"
+    )
     with open(save_result_path, "w") as f:
         json.dump(results, f, indent=2)
 

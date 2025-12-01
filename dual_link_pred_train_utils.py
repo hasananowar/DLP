@@ -291,21 +291,14 @@ def run_dual(model, optimizer, args,
         time_epoch += (time.time() - start_time)
 
        
-        if mode == 'train':
-            # GPU metrics
-            _pred  = pred.detach().cpu()
-            _label = edge_label.detach().cpu()
+        _pred  = pred.detach().cpu()
+        _label = edge_label.detach().cpu()
+        if _pred.numel() > 0:
             MLAUROC.update(_pred, _label)
             MLAUPRC.update(_pred, _label)
-            bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
-            MLF1.update(bin_preds, _label.view(-1).long())
-        else:
-            # CPU metrics (avoid non-deterministic CUDA cumsum)
-            _pred  = pred.detach().cpu()
-            _label = edge_label.detach().cpu()
-            MLAUROC.update(_pred, _label)
-            MLAUPRC.update(_pred, _label)
-
+            if mode == 'train':
+                bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
+                MLF1.update(bin_preds, _label.view(-1).long())
             if mode == 'valid':
                 all_val_preds.append(_pred)
                 all_val_labels.append(_label)
@@ -478,13 +471,13 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
 
         with torch.no_grad():
             valid_auc, valid_ap, valid_f1, valid_loss, time_valid = run_dual(
-                copy.deepcopy(model), 
+                copy.deepcopy(model),
                 None, args, valid_subgraphs1, valid_subgraphs2,
                 df1, df2, node_feats, edge_feats1, edge_feats2,
                 valid_AUROC, valid_AUPRC, valid_F1, mode='valid')
             
             test_auc, test_ap, test_f1, test_loss, time_test = run_dual(
-                copy.deepcopy(model), 
+                copy.deepcopy(model),
                 None, args, test_subgraphs1, test_subgraphs2,
                 df1, df2, node_feats, edge_feats1, edge_feats2,
                 test_AUROC, test_AUPRC, test_F1, mode='test')
@@ -532,7 +525,8 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     'best_test_ap': best_test_ap,
     'best_test_f1': best_test_f1,
     'lowest loss': low_loss,
-    'Total train time': user_train_total_time,
+    'Total train time': user_train_total_time, 
+    'Test time': time_test,
     'no_params': no_params,
     'no_buffers': no_buffers,
     'param_size': human_bytes(p_bytes),
@@ -544,8 +538,8 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     save_result_folder.mkdir(parents=True, exist_ok=True)
 
     save_result_path = save_result_folder / (
-        f"node{args.use_node_feats}_"
-        f"embed{getattr(args, 'use_embedding', False)}.json"
+        f"group{args.use_atomic_group}_"
+        f"emb{getattr(args, 'use_embedding', False)}.json"
     )
     with open(save_result_path, "w") as f:
         json.dump(results, f, indent=2)

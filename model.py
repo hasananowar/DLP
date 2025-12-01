@@ -543,7 +543,7 @@ class Dual_Interface(nn.Module):
         pred_true, pred_false, pred_neg, idx1, idx2, x_cache = self.predict(
             base_inputs, pos_edge_label, neg_samples, node_feats, src_ids1, src_ids2
         )
-
+        # Empty batch guard
         if pred_true.numel() == 0 and pred_false.numel() == 0:
             device = pos_edge_label.device
             loss = torch.tensor(0.0, device=device, requires_grad=True)
@@ -555,11 +555,13 @@ class Dual_Interface(nn.Module):
                 self._layout_bounds(x_cache.shape[0], neg_samples)
             K = idx1.size(0)
 
-            # preference dot vs current positive dst embeddings
+            # Gather memory and current positive dst embeddings
             m1 = self.pref1.get(src_ids1[:num_edge]).index_select(0, idx1)  # [K, D]
             m2 = self.pref2.get(src_ids2[:num_edge]).index_select(0, idx2)  # [K, D]
             h_pos1 = x_cache[base1:base_pos1].index_select(0, idx1)         # [K, D]
             h_pos2 = x_cache[base_pos2:base_pos2+num_edge].index_select(0, idx2)  # [K, D]
+
+            # Preference dot-products for positives
             pref_dot = 0.5 * ((m1 * h_pos1).sum(-1) + (m2 * h_pos2).sum(-1))     # [K]
 
             y_pos = pos_edge_label.index_select(0, idx1).view(-1, 1)
@@ -571,7 +573,7 @@ class Dual_Interface(nn.Module):
             if pred_false.numel() > 0:
                 pred_false = pred_false + self.alpha_pref * pref_dot[mask_false].view(-1, 1)
 
-            # negatives (3 stacks) — preference against neg dsts
+            # negatives (3 stacks) 
             if pred_neg.numel() > 0 and neg_samples > 0:
                 rows1 = self._neg_rows(idx1, neg_samples, x_cache.device)
                 rows2 = self._neg_rows(idx2, neg_samples, x_cache.device)
@@ -596,7 +598,7 @@ class Dual_Interface(nn.Module):
                 keep = torch.randperm(pred_neg.size(0), generator=gen, device=pred_neg.device)[:target_neg]
                 pred_neg = pred_neg.index_select(0, keep)
 
-        # ---- loss ----
+        # loss 
         loss_true  = self.criterion(pred_true,  torch.ones_like(pred_true)).mean() if pred_true.numel()  > 0 else 0.0
         loss_false = self.criterion(pred_false, torch.zeros_like(pred_false)).mean() if pred_false.numel() > 0 else 0.0
         loss_neg   = self.criterion(pred_neg,   torch.zeros_like(pred_neg)).mean()   if pred_neg.numel()   > 0 else 0.0
@@ -607,7 +609,7 @@ class Dual_Interface(nn.Module):
                                torch.zeros_like(pred_false),
                                torch.zeros_like(pred_neg)], dim=0)
 
-        # ---- Preference updates (positives only) ----
+        # Preference updates 
         if self.enable_preference and idx1.numel() > 0:
             num_edge, base1, base_pos1, _, base2, base_pos2, _, _ = self._layout_bounds(x_cache.shape[0], neg_samples)
             with torch.no_grad():

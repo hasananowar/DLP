@@ -270,8 +270,8 @@ if __name__ == "__main__":
 
     args.use_graph_structure = True
     #args.ignore_node_feats = True  # We only use graph structure
-    # args.use_node_feats = True # Use node features
-    #args.use_atomic_group = True     # Atomic group encoding
+    args.use_node_feats = True # Use node features
+    # args.use_atomic_group = True     # Atomic group encoding
     args.use_cached_subgraph = True
 
     print(args)

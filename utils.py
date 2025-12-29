@@ -43,21 +43,24 @@ def load_feat(d):
         node_feats = torch.load('DATA/{}/node_features.pt'.format(d))
         if node_feats.dtype == torch.bool:
             node_feats = node_feats.type(torch.float32)
-        
 
-    edge_feats = None
+    edge_feats1 = None
+    edge_feats2 = None
     if os.path.exists('DATA/{}/edge_features.pt'.format(d)):
         edge_feats = torch.load('DATA/{}/edge_features.pt'.format(d))
         if edge_feats.dtype == torch.bool:
             edge_feats = edge_feats.type(torch.float32)
-    return node_feats, edge_feats    
+    return node_feats, edge_feats1, edge_feats2
 
 def load_graph(d):
-
-    df = pd.read_csv('DATA/{}/edges.csv'.format(d))
-    g = np.load('DATA/{}/ext_full.npz'.format(d))
-
-    return g, df
+    """
+    Load graph and edge list data from the specified directory.
+    """
+    df1 = pd.read_csv(f'DATA/{d}/edges1.csv')
+    g1 = np.load(f'DATA/{d}/edges1.npz')
+    df2 = pd.read_csv(f'DATA/{d}/edges2.csv')
+    g2 = np.load(f'DATA/{d}/edges2.npz')
+    return g1, g2, df1, df2
 
 def node_cls_info(args):
     # load node label information

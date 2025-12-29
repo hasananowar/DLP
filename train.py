@@ -1,7 +1,9 @@
 import argparse
-# from utils import set_seed, load_feat, load_graph
+from utils import set_seed, load_feat, load_graph
 from data_process_utils import check_data_leakage
 import pandas as pd
+import random
+import numpy as np
 
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"   
@@ -12,10 +14,6 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 torch.use_deterministic_algorithms(True, warn_only=False)
 
-
-import random
-import numpy as np
-####################################################################
 ####################################################################
 ####################################################################
 
@@ -72,37 +70,6 @@ def get_args():
     parser.add_argument('--early_stop_patience', type=int, default=30)
     return parser.parse_args()
 
-# utility function
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-def load_feat(d):
-    node_feats = None
-    if os.path.exists('DATA/{}/node_features.pt'.format(d)):
-        node_feats = torch.load('DATA/{}/node_features.pt'.format(d))
-        if node_feats.dtype == torch.bool:
-            node_feats = node_feats.type(torch.float32)
-
-    edge_feats1 = None
-    edge_feats2 = None
-    if os.path.exists('DATA/{}/edge_features.pt'.format(d)):
-        edge_feats = torch.load('DATA/{}/edge_features.pt'.format(d))
-        if edge_feats.dtype == torch.bool:
-            edge_feats = edge_feats.type(torch.float32)
-    return node_feats, edge_feats1, edge_feats2   
-
-def load_graph(d):
-    """
-    Load graph and edge list data from the specified directory.
-    """
-    df1 = pd.read_csv(f'DATA/{d}/edges1.csv')
-    g1 = np.load(f'DATA/{d}/edges1.npz')
-    df2 = pd.read_csv(f'DATA/{d}/edges2.csv')
-    g2 = np.load(f'DATA/{d}/edges2.npz')
-    return g1, g2, df1, df2
 
 def load_all_data(args):
 
@@ -117,15 +84,13 @@ def load_all_data(args):
     args.num_nodes1 = max(int(df1['src'].max()), int(df1['dst'].max())) + 1
     args.num_nodes2 = max(int(df2['src'].max()), int(df2['dst'].max())) + 1
 
-    # args.num_nodes1 = df1['src'].nunique() + df1['dst'].nunique()
-    # args.num_nodes2 = df2['src'].nunique() + df2['dst'].nunique()
-
     args.num_edges = len(df1) # the number of edges are same for both datasets
 
     print('Train %d, Valid %d, Test %d'%(args.train_edge_end, 
                                          args.val_edge_end-args.train_edge_end,
                                          len(df1)-args.val_edge_end))
-    print('Num nodes for data1 %d, Num nodes for data2 %d, num edges %d' % (args.num_nodes1, args.num_nodes2, args.num_edges))
+    print('Num nodes for data1 %d, Num nodes for data2 %d, num edges %d' % (args.num_nodes1, 
+                                                                            args.num_nodes2, args.num_edges))
     
     # Load features 
     node_feats, edge_feats1, edge_feats2  = load_feat(args.data)  
@@ -269,9 +234,9 @@ if __name__ == "__main__":
     args = get_args()
 
     args.use_graph_structure = True
-    #args.ignore_node_feats = True  # We only use graph structure
+    #args.ignore_node_feats = True 
     args.use_node_feats = True # Use node features
-    # args.use_atomic_group = True     # Atomic group encoding
+    args.use_atomic_group = True     # Atomic group encoding
     args.use_cached_subgraph = True
 
     print(args)

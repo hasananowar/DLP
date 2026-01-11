@@ -4,15 +4,16 @@ from data_process_utils import check_data_leakage
 import pandas as pd
 import random
 import numpy as np
+from pathlib import Path
+import json
 
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"   
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"     
 
 import torch
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-torch.use_deterministic_algorithms(True, warn_only=False)
+# torch.backends.cudnn.deterministic = True
+# torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True, warn_only=True)
 
 ####################################################################
 ####################################################################
@@ -234,29 +235,132 @@ if __name__ == "__main__":
     args = get_args()
 
     args.use_graph_structure = True
-    #args.ignore_node_feats = True 
     args.use_node_feats = True # Use node features
-    args.use_atomic_group = True     # Atomic group encoding
+    args.use_atomic_group = True # Atomic group encoding
     args.use_cached_subgraph = True
 
     print(args)
 
-    # Determine device
+    # device
     args.device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"
     args.device = torch.device(args.device)
-    
-    # Set random seed for reproducibility
-    set_seed(0)
 
-    ###################################################
-    # Load features and graphs
-    node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
+
+    # # Set random seed for reproducibility
+    # set_seed(0)
+
+    # ###################################################
+    # # Load features and graphs
+    # node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
         
-    ###################################################
-    # Load model
-    model, args, link_pred_train_dual = load_model(args)
+    # ###################################################
+    # # Load model
+    # model, args, link_pred_train_dual = load_model(args)
 
-    ###################################################
-    # Link prediction training
-    print('Train dual link prediction task from scratch ...')
-    model = link_pred_train_dual(model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2)
+    # ###################################################
+    # # Link prediction training
+    # print('Train dual link prediction task from scratch ...')
+    # model = link_pred_train_dual(model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2)
+
+    NUM_RUNS = 5
+    BASE_SEED = 0 
+
+    set_seed(BASE_SEED)
+    # ###################################################
+    # # Load features and graphs
+    node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
+
+    run_summaries = []
+    test_auroc, test_auprc, test_f1 = [], [], []
+    train_time, test_time = [], []
+
+    for run in range(NUM_RUNS):
+        seed = BASE_SEED + run
+        print(f"\n==================== RUN {run+1}/{NUM_RUNS} (seed={seed}) ====================")
+       
+        set_seed(seed)
+
+        # Load model
+
+        model, args, link_pred_train_dual = load_model(args)
+
+        results = link_pred_train_dual(
+            model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2
+        )
+
+        run_summaries.append({
+            "run": run + 1,
+            "seed": seed,
+            # metrics
+            "best_test_auc": results["best_test_auc"],
+            "best_test_ap": results["best_test_ap"],
+            "best_test_f1": results["best_test_f1"],
+            "best_epoch": results["best_epoch"],
+            "lowest_loss": results["lowest loss"],
+            # time
+            "Total train time": results["Total train time"],
+            "Test time": results["Test time"],
+            # memory / model size
+            "no_params": results["no_params"],
+            "no_buffers": results["no_buffers"],
+            "param_size": results["param_size"],
+            "buffer_size": results["buffer_size"],
+            "total_memory": results["total_memory"],
+        })
+
+        test_auroc.append(results["best_test_auc"])
+        test_auprc.append(results["best_test_ap"])
+        test_f1.append(results["best_test_f1"])
+        train_time.append(results["Total train time"])
+        test_time.append(results["Test time"])
+
+    # ---- summary stats (use sample std, ddof=1) ----
+    def mean_std(x):
+        x = np.asarray(x, dtype=np.float64)
+        mu = float(np.mean(x))
+        sd = float(np.std(x, ddof=1)) if x.size > 1 else 0.0
+        return mu, sd
+
+    mu_auc, sd_auc = mean_std(test_auroc)
+    mu_ap,  sd_ap  = mean_std(test_auprc)
+    mu_f1,  sd_f1  = mean_std(test_f1)
+
+    def pm(mu, sd):
+        return f"{mu:.4f} ± {sd:.4f}"
+
+    print("\n==================== 5-RUN SUMMARY (TEST) ====================")
+    print(f"AUROC: {pm(mu_auc, sd_auc)}")
+    print(f"AUPRC: {pm(mu_ap,  sd_ap)}")
+    print(f"F1:    {pm(mu_f1,  sd_f1)}")
+
+    # keep memory
+    mem0 = {k: run_summaries[0][k] for k in ["no_params","no_buffers","param_size","buffer_size","total_memory"]}
+
+    summary = {
+        "num_runs": NUM_RUNS,
+        "metrics_test": {
+            "AUROC": pm(mu_auc, sd_auc),
+            "AUPRC": pm(mu_ap,  sd_ap),
+            "F1":    pm(mu_f1,  sd_f1),
+            "AUROC_mean": mu_auc, "AUROC_std": sd_auc,
+            "AUPRC_mean": mu_ap,  "AUPRC_std": sd_ap,
+            "F1_mean":    mu_f1,  "F1_std":    sd_f1,
+        },
+        "time": {
+            "Total train time (mean)": float(np.mean(train_time)),
+            "Total train time (std)":  float(np.std(train_time, ddof=1)) if NUM_RUNS > 1 else 0.0,
+            "Test time (mean)":        float(np.mean(test_time)),
+            "Test time (std)":         float(np.std(test_time, ddof=1)) if NUM_RUNS > 1 else 0.0,
+        },
+        "memory": mem0,
+        "per_run": run_summaries,
+    }
+
+    # save JSON
+    out_dir = Path("results") / str(args.data)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "runs_5.json"
+    with open(out_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"\nSaved: {out_path}")
+    

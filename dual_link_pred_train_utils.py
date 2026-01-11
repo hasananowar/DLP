@@ -13,23 +13,21 @@ from sklearn.metrics import f1_score
 import logging
 import math
 from pathlib import Path
-# Set up logging with proper format
+
 logging.basicConfig(level=logging.INFO, 
                     format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Example logging usage
-logging.info("This is an info message")
+
 from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision, BinaryF1Score
 from sklearn.preprocessing import MinMaxScaler
-
 
 
 rng1_train = np.random.default_rng(0)  # edges1 (train)
 rng2_train = np.random.default_rng(1)  # edges2 (train)
 
-# F1: need thresholded predictions
-def prepare_preds_for_f1(preds: torch.Tensor, threshold: float):
-    return (torch.sigmoid(preds) > threshold).long()
+# # F1: need thresholded predictions
+# def prepare_preds_for_f1(preds: torch.Tensor, threshold: float):
+#     return (torch.sigmoid(preds) >= threshold).long()
 
 def run_dual(model, optimizer, args,
              subgraphs1, subgraphs2, df1, df2,
@@ -42,9 +40,9 @@ def run_dual(model, optimizer, args,
     """
 
     # For validation only: keep a list of all preds+labels
-    all_val_preds = []
-    all_val_labels = []
-    best_threshold = getattr(args, 'best_threshold', 0.5)
+    # all_val_preds = []
+    # all_val_labels = []
+    # best_threshold = getattr(args, 'best_threshold', 0.5)
     time_epoch = 0.0
 
     # -----------------------------
@@ -95,7 +93,7 @@ def run_dual(model, optimizer, args,
     else:
         raise ValueError("Mode should be 'train', 'valid', or 'test'")
 
-    # Create loaders and sanity check
+    # Create loaders 
     train_loader1 = cur_df1.groupby(cur_df1.index // args.batch_size)
     train_loader2 = cur_df2.groupby(cur_df2.index // args.batch_size)
     assert len(train_loader1) == len(train_loader2), "Mismatch in number of batches between subgraphs1 and subgraphs2"
@@ -146,7 +144,7 @@ def run_dual(model, optimizer, args,
             subgraph_data1 = [subgraph_data_list1[i] for i in mini_batch_inds1]
             subgraph_data2 = [subgraph_data_list2[i] for i in mini_batch_inds2]
 
-        # -------- build giant graphs --------
+        # build giant graphs
         subgraph_data1 = construct_mini_batch_giant_graph(subgraph_data1, args.max_edges)
         subgraph_data2 = construct_mini_batch_giant_graph(subgraph_data2, args.max_edges)
 
@@ -293,19 +291,24 @@ def run_dual(model, optimizer, args,
        
         _pred  = pred.detach().cpu()
         _label = edge_label.detach().cpu()
+
         if _pred.numel() > 0:
             MLAUROC.update(_pred, _label)
             MLAUPRC.update(_pred, _label)
-            if mode == 'train':
-                bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
-                MLF1.update(bin_preds, _label.view(-1).long())
-            if mode == 'valid':
-                all_val_preds.append(_pred)
-                all_val_labels.append(_label)
-            else:
-                # test F1 at best known threshold
-                bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
-                MLF1.update(bin_preds, _label.view(-1).long())
+            MLF1.update(_pred, _label)
+        # if _pred.numel() > 0:
+        #     MLAUROC.update(_pred, _label)
+        #     MLAUPRC.update(_pred, _label)
+        #     if mode == 'train':
+        #         bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
+        #         MLF1.update(bin_preds, _label.view(-1).long())
+        #     if mode == 'valid':
+        #         all_val_preds.append(_pred)
+        #         all_val_labels.append(_label)
+        #     else:
+        #         # test F1 at best known threshold
+        #         bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
+        #         MLF1.update(bin_preds, _label.view(-1).long())
 
         # Accumulate loss
         loss_lst.append(float(loss))
@@ -313,27 +316,28 @@ def run_dual(model, optimizer, args,
 
     pbar.close()
 
+    # if mode == 'valid':
+    #     val_preds  = torch.cat(all_val_preds).view(-1)           
+    #     val_labels = torch.cat(all_val_labels).view(-1)          
+    #     val_probs  = torch.sigmoid(val_preds).tolist()
+
+    #     best_tau, best_f1 = 0.5, -1.0
+    #     for τ in np.linspace(0.0, 1.0, 101):
+    #         pred_bin = [1 if prob >= τ else 0 for prob in val_probs]
+    #         f1       = BinaryF1Score(val_labels, pred_bin)
+    #         if f1 > best_f1:
+    #             best_f1, best_tau = f1, τ
+
+    #     args.best_threshold = best_tau
+    #     # F1 at best_tau for reporting
+    #     val_bin  = [1 if prob >= best_tau else 0 for prob in val_probs]
+    #     total_f1 = BinaryF1Score(val_labels, val_bin)
+    # else:
+    #     total_f1 = MLF1.compute().item()
+
     total_auroc = MLAUROC.compute()
     total_auprc = MLAUPRC.compute()
-
-    if mode == 'valid':
-        val_preds  = torch.cat(all_val_preds).view(-1)           # CPU
-        val_labels = torch.cat(all_val_labels).view(-1)          # CPU
-        val_probs  = torch.sigmoid(val_preds).tolist()
-
-        best_tau, best_f1 = 0.5, -1.0
-        for τ in np.linspace(0.0, 1.0, 101):
-            pred_bin = [1 if prob >= τ else 0 for prob in val_probs]
-            f1       = f1_score(val_labels, pred_bin)
-            if f1 > best_f1:
-                best_f1, best_tau = f1, τ
-
-        args.best_threshold = best_tau
-        # F1 at best_tau for reporting
-        val_bin  = [1 if prob >= best_tau else 0 for prob in val_probs]
-        total_f1 = f1_score(val_labels, val_bin)
-    else:
-        total_f1 = MLF1.compute().item()
+    total_f1 = MLF1.compute()
 
     # Scalars
     if torch.is_tensor(total_auroc): total_auroc = total_auroc.item()
@@ -428,7 +432,8 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     user_train_total_time = 0
     user_epoch_num = 0
     best_epoch = -1
-    best_test_auc, best_test_ap = 0, 0
+    best_test_auc, best_test_ap, best_test_f1  = 0, 0, 0
+    best_time_test = None
     
     if args.predict_class:
         num_classes = args.num_edgeType + 1
@@ -444,15 +449,15 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     else:
         train_AUROC = BinaryAUROC(thresholds=None)            # CPU
         train_AUPRC = BinaryAveragePrecision(thresholds=None) # CPU
-        train_F1    = BinaryF1Score()                         # CPU
+        train_F1    = BinaryF1Score(threshold=0.5)                         # CPU
 
         valid_AUROC = BinaryAUROC(thresholds=None)            # CPU
         valid_AUPRC = BinaryAveragePrecision(thresholds=None) # CPU
-        valid_F1    = BinaryF1Score()                         # CPU
+        valid_F1    = BinaryF1Score(threshold=0.5)                         # CPU
 
         test_AUROC  = BinaryAUROC(thresholds=None)            # CPU
         test_AUPRC  = BinaryAveragePrecision(thresholds=None) # CPU
-        test_F1     = BinaryF1Score()                         # CPU
+        test_F1     = BinaryF1Score(threshold=0.5)                         # CPU
         
     
     ###################################################
@@ -460,7 +465,6 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     for epoch in range(args.epochs):
         print(f'>>> Epoch {epoch + 1}')
 
-        
         # Train
         train_auc, train_ap, train_f1, train_loss, time_train = run_dual(
             model, optimizer, args, train_subgraphs1, train_subgraphs2,
@@ -468,7 +472,6 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
             train_AUROC, train_AUPRC, train_F1, mode='train')
         
         # Validate
-
         with torch.no_grad():
             valid_auc, valid_ap, valid_f1, valid_loss, time_valid = run_dual(
                 copy.deepcopy(model),
@@ -488,8 +491,12 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
             low_loss = valid_loss
             best_epoch = epoch
             best_test_auc, best_test_ap, best_test_f1 = test_auc, test_ap, test_f1
+            best_time_test = time_test
             
         user_train_total_time += time_train + time_valid
+        if best_time_test is None:
+            best_time_test = time_test
+
         user_epoch_num += 1
         if epoch > best_epoch + 30:
             break
@@ -509,10 +516,6 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         all_results['train_loss'].append(train_loss)
         all_results['valid_loss'].append(valid_loss)
         all_results['test_loss'].append(test_loss)
-        
-        print(f"Train: AUROC1 {train_auc:.4f}, AUPRC {train_ap:.4f}, F1 {train_f1:.4f}, Loss {train_loss:.4f}")
-        print(f"Valid: AUROC1 {valid_auc:.4f}, AUPRC {valid_ap:.4f}, F1 {valid_f1:.4f}, Loss {valid_loss:.4f}")
-        print(f"Test: AUROC1 {test_auc:.4f}, AUPRC {test_ap:.4f}, F1 {test_f1:.4f}, Loss {test_loss:.4f}")
 
     print(f'AUROC: {best_test_auc:.4f}, AUPRC: {best_test_ap:.4f}, F1: {best_test_f1:.4f}, Valid Loss: {low_loss:.4f}, total_memory: {human_bytes(total_bytes)}')
 
@@ -526,7 +529,7 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     'best_test_f1': best_test_f1,
     'lowest loss': low_loss,
     'Total train time': user_train_total_time, 
-    'Test time': time_test,
+    'Test time': best_time_test,
     'no_params': no_params,
     'no_buffers': no_buffers,
     'param_size': human_bytes(p_bytes),
@@ -534,19 +537,21 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     'total_memory': human_bytes(total_bytes),
 }
 
-    save_result_folder = Path("results") / f"preference_{str(args.enable_preference).lower()}" / str(args.data)
-    save_result_folder.mkdir(parents=True, exist_ok=True)
+    # save_result_folder = Path("results") / f"preference_{str(args.enable_preference).lower()}" / str(args.data)
+    # save_result_folder.mkdir(parents=True, exist_ok=True)
 
-    save_result_path = save_result_folder / (
-        f"group{args.use_atomic_group}_"
-        f"emb{getattr(args, 'use_embedding', False)}.json"
-    )
-    with open(save_result_path, "w") as f:
-        json.dump(results, f, indent=2)
+    # save_result_path = save_result_folder / (
+    #     f"group{args.use_atomic_group}_"
+    #     f"emb{getattr(args, 'use_embedding', False)}.json"
+    # )
+    # with open(save_result_path, "w") as f:
+    #     json.dump(results, f, indent=2)
 
-    print(f"Results written to {save_result_path}")
+    # print(f"Results written to {save_result_path}")
     
-    return best_auc_model
+    # return best_auc_model
+    return results
+
 
 def compute_sign_feats(node_feats, df, start_i, num_links, root_nodes, args, num_nodes):
     root_nodes = torch.as_tensor(root_nodes, dtype=torch.long, device=args.device)

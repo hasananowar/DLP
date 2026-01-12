@@ -2,21 +2,16 @@ from tqdm import tqdm
 import torch
 import time
 import copy
-import json
 import numpy as np
 from torch_sparse import SparseTensor
 from data_process_utils import pre_compute_subgraphs, get_random_inds, get_subgraph_sampler
 from construct_subgraph import construct_mini_batch_giant_graph, print_subgraph_data
 from utils import row_norm
 from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision, MulticlassF1Score
-from sklearn.metrics import f1_score
 import logging
-import math
 from pathlib import Path
-
 logging.basicConfig(level=logging.INFO, 
                     format="%(asctime)s - %(levelname)s - %(message)s")
-
 
 from torchmetrics.classification import BinaryAUROC, BinaryAveragePrecision, BinaryF1Score
 from sklearn.preprocessing import MinMaxScaler
@@ -25,24 +20,14 @@ from sklearn.preprocessing import MinMaxScaler
 rng1_train = np.random.default_rng(0)  # edges1 (train)
 rng2_train = np.random.default_rng(1)  # edges2 (train)
 
-# # F1: need thresholded predictions
-# def prepare_preds_for_f1(preds: torch.Tensor, threshold: float):
-#     return (torch.sigmoid(preds) >= threshold).long()
-
 def run_dual(model, optimizer, args,
              subgraphs1, subgraphs2, df1, df2,
              node_feats, edge_feats1, edge_feats2,
              MLAUROC, MLAUPRC, MLF1, mode):
     """
     Executes a training or evaluation epoch for dual link prediction tasks.
-    - TRAIN metrics are assumed to live on GPU (args.device)
-    - EVAL (valid/test) metrics are assumed to live on CPU
     """
 
-    # For validation only: keep a list of all preds+labels
-    # all_val_preds = []
-    # all_val_labels = []
-    # best_threshold = getattr(args, 'best_threshold', 0.5)
     time_epoch = 0.0
 
     # -----------------------------
@@ -171,7 +156,7 @@ def run_dual(model, optimizer, args,
                 subgraph_edge_feats1 = torch.cat([diff12, mul12], dim=1)   # [E1, 2d]
                 subgraph_edge_feats2 = torch.cat([diff21, mul21], dim=1)   # [E2, 2d]
             else:
-                # (optional) print/log once per epoch that E1 != E2 to keep an eye on alignment rate
+                
                 z1 = torch.zeros_like(emb1)
                 z2 = torch.zeros_like(emb2)
                 subgraph_edge_feats1 = torch.cat([emb1, z1], dim=1)  # [E1, 2d]
@@ -296,44 +281,12 @@ def run_dual(model, optimizer, args,
             MLAUROC.update(_pred, _label)
             MLAUPRC.update(_pred, _label)
             MLF1.update(_pred, _label)
-        # if _pred.numel() > 0:
-        #     MLAUROC.update(_pred, _label)
-        #     MLAUPRC.update(_pred, _label)
-        #     if mode == 'train':
-        #         bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
-        #         MLF1.update(bin_preds, _label.view(-1).long())
-        #     if mode == 'valid':
-        #         all_val_preds.append(_pred)
-        #         all_val_labels.append(_label)
-        #     else:
-        #         # test F1 at best known threshold
-        #         bin_preds = prepare_preds_for_f1(_pred, best_threshold).squeeze()
-        #         MLF1.update(bin_preds, _label.view(-1).long())
 
         # Accumulate loss
         loss_lst.append(float(loss))
         pbar.update(1)
 
     pbar.close()
-
-    # if mode == 'valid':
-    #     val_preds  = torch.cat(all_val_preds).view(-1)           
-    #     val_labels = torch.cat(all_val_labels).view(-1)          
-    #     val_probs  = torch.sigmoid(val_preds).tolist()
-
-    #     best_tau, best_f1 = 0.5, -1.0
-    #     for τ in np.linspace(0.0, 1.0, 101):
-    #         pred_bin = [1 if prob >= τ else 0 for prob in val_probs]
-    #         f1       = BinaryF1Score(val_labels, pred_bin)
-    #         if f1 > best_f1:
-    #             best_f1, best_tau = f1, τ
-
-    #     args.best_threshold = best_tau
-    #     # F1 at best_tau for reporting
-    #     val_bin  = [1 if prob >= best_tau else 0 for prob in val_probs]
-    #     total_f1 = BinaryF1Score(val_labels, val_bin)
-    # else:
-    #     total_f1 = MLF1.compute().item()
 
     total_auroc = MLAUROC.compute()
     total_auprc = MLAUPRC.compute()
@@ -353,9 +306,6 @@ def run_dual(model, optimizer, args,
 def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2):
     """
     Train the model for dual link prediction tasks.
-    
-    Returns:
-        best_auc_model: The best-performing model based on validation loss.
     """
 
     def human_bytes(nbytes: int) -> str:
@@ -390,7 +340,6 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
         b_bytes = sum(b.numel() * b.element_size() for b in buffers)
         return p_cnt, b_cnt, p_bytes, b_bytes, (p_bytes + b_bytes)
 
-    # ---- usage ----
     no_params, no_buffers, p_bytes, b_bytes, total_bytes = param_buffer_bytes(model)
 
     optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -449,15 +398,15 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     else:
         train_AUROC = BinaryAUROC(thresholds=None)            # CPU
         train_AUPRC = BinaryAveragePrecision(thresholds=None) # CPU
-        train_F1    = BinaryF1Score(threshold=0.5)                         # CPU
+        train_F1    = BinaryF1Score(threshold=0.5)                         
 
         valid_AUROC = BinaryAUROC(thresholds=None)            # CPU
         valid_AUPRC = BinaryAveragePrecision(thresholds=None) # CPU
-        valid_F1    = BinaryF1Score(threshold=0.5)                         # CPU
+        valid_F1    = BinaryF1Score(threshold=0.5)                        
 
         test_AUROC  = BinaryAUROC(thresholds=None)            # CPU
         test_AUPRC  = BinaryAveragePrecision(thresholds=None) # CPU
-        test_F1     = BinaryF1Score(threshold=0.5)                         # CPU
+        test_F1     = BinaryF1Score(threshold=0.5)                         
         
     
     ###################################################
@@ -536,18 +485,6 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     'buffer_size': human_bytes(b_bytes),
     'total_memory': human_bytes(total_bytes),
 }
-
-    # save_result_folder = Path("results") / f"preference_{str(args.enable_preference).lower()}" / str(args.data)
-    # save_result_folder.mkdir(parents=True, exist_ok=True)
-
-    # save_result_path = save_result_folder / (
-    #     f"group{args.use_atomic_group}_"
-    #     f"emb{getattr(args, 'use_embedding', False)}.json"
-    # )
-    # with open(save_result_path, "w") as f:
-    #     json.dump(results, f, indent=2)
-
-    # print(f"Results written to {save_result_path}")
     
     # return best_auc_model
     return results

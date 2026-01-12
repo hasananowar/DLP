@@ -6,14 +6,12 @@ import random
 import numpy as np
 from pathlib import Path
 import json
-
+import torch
+torch.use_deterministic_algorithms(True, warn_only=True)
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"   
 
-import torch
-# torch.backends.cudnn.deterministic = True
-# torch.backends.cudnn.benchmark = False
-torch.use_deterministic_algorithms(True, warn_only=True)
+
 
 ####################################################################
 ####################################################################
@@ -29,7 +27,7 @@ def get_args():
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--epochs', type=int, default=300)
-    parser.add_argument('--max_edges', type=int, default=50) #200
+    parser.add_argument('--max_edges', type=int, default=50)
     parser.add_argument('--num_edgeType', type=int, default=0, help='num of edgeType')
     parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-4)
@@ -41,9 +39,9 @@ def get_args():
     parser.add_argument('--model', type=str, default='DLP') 
     parser.add_argument('--neg_samples', type=int, default=1)
     parser.add_argument('--extra_neg_samples', type=int, default=1)
-    parser.add_argument('--num_neighbors', type=int, default=50) #200
+    parser.add_argument('--num_neighbors', type=int, default=50)
     parser.add_argument('--channel_expansion_factor', type=int, default=1)
-    parser.add_argument('--sampled_num_hops', type=int, default=1) #5
+    parser.add_argument('--sampled_num_hops', type=int, default=1)
     parser.add_argument('--pair_dims', type=int, default=100)
     parser.add_argument('--time_dims', type=int, default=100)
     parser.add_argument('--hidden_dims', type=int, default=100)
@@ -146,7 +144,6 @@ def load_all_data(args):
             edge_feat1_dims = edge_feats1.size(1)
             edge_feat2_dims = edge_feats2.size(1)
 
-    # Report dims robustly
     print('Final Edge 1 feat dim: %d, Final Edge 2 feat dim: %d' % (edge_feat1_dims, edge_feat2_dims))
 
 
@@ -202,9 +199,6 @@ def load_model(args):
         raise NotImplementedError(f"Model {args.model} is not implemented.")
 
 
-    # node IDs are consistent across datasets
-    num_nodes = min(args.num_nodes1, args.num_nodes2)
-
     model = Dual_Interface(
     mixer_configs,
     edge_predictor_configs,
@@ -246,22 +240,6 @@ if __name__ == "__main__":
     args.device = torch.device(args.device)
 
 
-    # # Set random seed for reproducibility
-    # set_seed(0)
-
-    # ###################################################
-    # # Load features and graphs
-    # node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
-        
-    # ###################################################
-    # # Load model
-    # model, args, link_pred_train_dual = load_model(args)
-
-    # ###################################################
-    # # Link prediction training
-    # print('Train dual link prediction task from scratch ...')
-    # model = link_pred_train_dual(model.to(args.device), args, g1, g2, df1, df2, node_feats, edge_feats1, edge_feats2)
-
     NUM_RUNS = 5
     BASE_SEED = 0 
 
@@ -276,7 +254,7 @@ if __name__ == "__main__":
 
     for run in range(NUM_RUNS):
         seed = BASE_SEED + run
-        print(f"\n==================== RUN {run+1}/{NUM_RUNS} (seed={seed}) ====================")
+        print(f"\n RUN {run+1}/{NUM_RUNS} (seed={seed})")
        
         set_seed(seed)
 
@@ -328,7 +306,6 @@ if __name__ == "__main__":
     def pm(mu, sd):
         return f"{mu:.4f} ± {sd:.4f}"
 
-    print("\n==================== 5-RUN SUMMARY (TEST) ====================")
     print(f"AUROC: {pm(mu_auc, sd_auc)}")
     print(f"AUPRC: {pm(mu_ap,  sd_ap)}")
     print(f"F1:    {pm(mu_f1,  sd_f1)}")

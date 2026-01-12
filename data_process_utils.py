@@ -164,20 +164,8 @@ def pre_compute_subgraphs(args, g, df, mode, input_data):
     return subgraph_elabel
 
 
-# def get_random_inds(num_subgraph, cached_neg_samples, neg_samples):
-#     ###################################################
-#     batch_size = num_subgraph // (2+cached_neg_samples)
-#     pos_src_inds = np.arange(batch_size)
-#     pos_dst_inds = np.arange(batch_size) + batch_size
-#     neg_dst_inds = np.random.randint(low=2, high=2+cached_neg_samples, size=int(batch_size*neg_samples))
-#     neg_dst_inds = batch_size * neg_dst_inds + np.arange(batch_size)
-#     mini_batch_inds = np.concatenate([pos_src_inds, pos_dst_inds, neg_dst_inds]).astype(np.int32)
-#     ###################################################
-
-#     return mini_batch_inds
-
 def get_random_inds(num_subgraph, cached_neg_samples, neg_samples, rng=None):
-    rng = rng or np.random.default_rng()  # don’t reseed here
+    rng = rng or np.random.default_rng()
     batch_size = num_subgraph // (2 + cached_neg_samples)
     pos_src_inds = np.arange(batch_size)
     pos_dst_inds = np.arange(batch_size) + batch_size
@@ -211,7 +199,6 @@ def check_data_leakage(args, g, df):
                 all_eids_in_subgraph = cur_subgraph['eid']
                 if len(all_eids_in_subgraph) == 0:
                     continue
-                # all edges in the sampled graph has eid smaller than the target edge's eid, i.e,. sampled links never seen before
                 assert sum(all_eids_in_subgraph < eid) == len(all_eids_in_subgraph)
                 
     print('Does not detect information leakage ...')

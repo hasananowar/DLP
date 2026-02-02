@@ -26,8 +26,7 @@ __pycache__/
 *.sh
 *.sbatch
 
-train_new.py
-dual_link_pred_train_utils_new.py
+quickcommand.txt
 test.ipynb
 gen_data.ipynb
 
@@ -39,7 +38,6 @@ gen_data.ipynb
 venv/
 ENV/
 env/
-EXTRA_DATA/
 .venv/
 env.bak/
 venv.bak/
@@ -51,8 +49,10 @@ Thumbs.db
 # IDE specific
 .vscode/
 .idea/
-new_*
-old_*
 DATA/
+data/
+DG_data/
+processed_data/
 build/
 models/
+saved_models/

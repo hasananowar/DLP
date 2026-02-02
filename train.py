@@ -52,10 +52,8 @@ def get_args():
     parser.add_argument('--node_feats_as_edge_feats', action='store_true')
     parser.add_argument('--ignore_edge_feats', action='store_true')
     parser.add_argument('--use_node_feats', action='store_true')
-    parser.add_argument('--enable_preference', dest='enable_preference', action='store_true',
-                    help='Enable preference memory (default: True)')
-    parser.add_argument('--disable_preference', dest='enable_preference', action='store_false',
-                        help='Disable preference memory')
+    parser.add_argument("--disable_preference",dest="enable_preference",
+        action="store_false", help="Disable preference memory (default: enabled)")
     parser.set_defaults(enable_preference=True)
     parser.add_argument('--use_atomic_group', action='store_true')
     parser.add_argument('--use_embedding', action='store_true',
@@ -330,13 +328,15 @@ if __name__ == "__main__":
             "Test time (std)":         float(np.std(test_time, ddof=1)) if NUM_RUNS > 1 else 0.0,
         },
         "memory": mem0,
+        "enable_preference": args.enable_preference,
         "per_run": run_summaries,
     }
 
-    # save JSON
+    # save output
+    tag = "preference" if args.enable_preference else "no_preference"
     out_dir = Path("results") / str(args.data)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "runs_5.json"
+    out_path = out_dir / f"runs_5_{tag}.json"
     with open(out_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"\nSaved: {out_path}")

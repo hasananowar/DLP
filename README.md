@@ -53,9 +53,9 @@ python gen_graph.py --data FILT_HB/edges2.csv
 python train.py --data FILT_HB
 ```
 
-### Baselines
+#### Baselines
 
-#### To run the adapted baselines go to the corresponding folder and run the following
+To run the adapted baselines go to the corresponding folder and run the following
 
 ```shell
 bash run.sh

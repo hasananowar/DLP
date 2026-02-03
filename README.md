@@ -1,6 +1,5 @@
-## Dual Link Prediction from Hydrogen Bonds in Dynamic Molecular Graph
-We propose a novel dual link prediction framework (DLP) that predicts the coexistence of *dual links* from dynamic molecular graphs. DLP employs an edge encoder to fuse the atomic relationships and temporal dynamics, followed by a transformer-based encoder to learn node representations. DLP also includes a memory module that is updated only upon the occurrence of positive *dual links*.
-
+## DLP: Dual Link Prediction from Hydrogen Bonds in Dynamic Molecular Graph
+We propose a novel dual link prediction framework (DLP) that predicts the coexistence of *dual links* from dynamic molecular graphs.
 ![DLP Framework](./DLP_model_2.png)
 
 
@@ -66,10 +65,15 @@ bash run.sh
 
 Presently, we only provide a small sample of the dataset used [Download Sample Dataset](https://drive.google.com/file/d/1cYsPavp3G7H16gU5ysX_ldmjD8uA7by-/view?usp=sharing). Since the data was obtained from our collaborators working on Molecular Dynamics Simulation at other institutions - please send us a formal request via email and we will promptly respond and provide it.
 
-## Contact
+### Contact
 
 If you have any questions, feel free to contact us.
 Emails: `mhanowar@iastate.edu` or `gocet25@iastate.edu`
+
+### License
+
+This project is released under the MIT License. See `LICENSE` and
+`THIRD_PARTY_LICENSES.md` for details.
 
 
 

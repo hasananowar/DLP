@@ -1,4 +1,7 @@
-## Dual Link Prediction
+## Dual Link Prediction from Hydrogen Bonds in Dynamic Molecular Graph
+We propose a novel dual link prediction framework (DLP) that predicts the coexistence of \textit{dual links} from dynamic molecular graphs. DLP employs an edge encoder to fuse the atomic relationships and temporal dynamics, followed by a transformer-based encoder to learn node representations. DLP also includes a memory module that is updated only upon the occurrence of \textit{dual links}.
+
+![DLP Framework](./DLP_model_2.png)
 
 ### Dependencies
 
@@ -48,12 +51,11 @@ python gen_graph.py --data FILT_HB/edges2.csv
 python train.py --data FILT_HB
 ```
 
-### Adapted Baselines
+### Baselines
 
-## To run TGAT/GraphMixer/FreeDyG
+#### To run the adapted baselines go to the corresponding folder and run the following
 
 ```shell
-cd adapted_baselines/FreeDyG
 bash run.sh
 ```
 

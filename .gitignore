@@ -23,9 +23,9 @@ __pycache__/
 *.pyo
 *.pyd
 *.so
-*.sh
 *.sbatch
 
+run_dlp.sh
 quickcommand.txt
 test.ipynb
 gen_data.ipynb

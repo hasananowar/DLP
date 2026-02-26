@@ -72,8 +72,7 @@ Emails: `mhanowar@iastate.edu` or `gocet25@iastate.edu`
 
 ### License
 
-This project is released under the MIT License. See `LICENSE` and
-`THIRD_PARTY_LICENSES.md` for details.
+This project is released under the MIT License. See `LICENSE` and `THIRD_PARTY_LICENSES.md` for details.
 
 
 

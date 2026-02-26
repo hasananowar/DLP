@@ -30,9 +30,7 @@ def run_dual(model, optimizer, args,
 
     time_epoch = 0.0
 
-    # -----------------------------
     # Mode setup
-    # -----------------------------
     if mode == 'train':
         model.train()
         cur_df1 = df1[:args.train_edge_end]
@@ -141,30 +139,29 @@ def run_dual(model, optimizer, args,
         eids1 = torch.as_tensor(subgraph_data1['eid'], dtype=torch.long, device=args.device)
         eids2 = torch.as_tensor(subgraph_data2['eid'], dtype=torch.long, device=args.device)
 
-        # =============================================================
+
         #  Embedding-based edge feature computation (trainable)
-        # =============================================================
+
 
         if getattr(model, 'atomic_group_embedding', None) is not None:
             E1, E2 = eids1.numel(), eids2.numel()
-            emb1 = model.atomic_group_embedding(model.pair_index1_full.index_select(0, eids1))  # [E1, d]
-            emb2 = model.atomic_group_embedding(model.pair_index2_full.index_select(0, eids2))  # [E2, d]
+            emb1 = model.atomic_group_embedding(model.pair_index1_full.index_select(0, eids1)) 
+            emb2 = model.atomic_group_embedding(model.pair_index2_full.index_select(0, eids2)) 
 
             if E1 == E2:
                 diff12 = (emb1 - emb2).abs(); mul12 = emb1 * emb2
                 diff21 = (emb2 - emb1).abs(); mul21 = emb2 * emb1
-                subgraph_edge_feats1 = torch.cat([diff12, mul12], dim=1)   # [E1, 2d]
-                subgraph_edge_feats2 = torch.cat([diff21, mul21], dim=1)   # [E2, 2d]
+                subgraph_edge_feats1 = torch.cat([diff12, mul12], dim=1)   
+                subgraph_edge_feats2 = torch.cat([diff21, mul21], dim=1)   
             else:
                 
                 z1 = torch.zeros_like(emb1)
                 z2 = torch.zeros_like(emb2)
-                subgraph_edge_feats1 = torch.cat([emb1, z1], dim=1)  # [E1, 2d]
-                subgraph_edge_feats2 = torch.cat([emb2, z2], dim=1)  # [E2, 2d]
+                subgraph_edge_feats1 = torch.cat([emb1, z1], dim=1) 
+                subgraph_edge_feats2 = torch.cat([emb2, z2], dim=1)  
 
-        # =============================================================
         #  One-hot edge features
-        # =============================================================
+
         else:
             if edge_feats1 is not None:
                 subgraph_edge_feats1 = edge_feats1[eids1]
@@ -196,7 +193,7 @@ def run_dual(model, optimizer, args,
             subgraph_node_feats1 = None
             subgraph_node_feats2 = None
 
-        # Scale edge timestamps to [0, 1000]
+        # Scale edge timestamps 
         min1, max1 = subgraph_edts1.min(), subgraph_edts1.max()
         span1 = (max1 - min1).clamp(min=1e-6)
         subgraph_edts1 = ((subgraph_edts1 - min1) / span1) * 1000
@@ -205,7 +202,7 @@ def run_dual(model, optimizer, args,
         span2 = (max2 - min2).clamp(min=1e-6)
         subgraph_edts2 = ((subgraph_edts2 - min2) / span2) * 1000
 
-        # Compute inds1/inds2 based on all_edge_indptr
+   
         all_inds1, has_temporal_neighbors1 = [], []
         aei1 = subgraph_data1['all_edge_indptr']
         for i in range(len(aei1) - 1):
@@ -486,7 +483,6 @@ def link_pred_train_dual(model, args, g1, g2, df1, df2, node_feats, edge_feats1,
     'total_memory': human_bytes(total_bytes),
 }
     
-    # return best_auc_model
     return results
 
 

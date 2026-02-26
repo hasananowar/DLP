@@ -116,7 +116,6 @@ def load_all_data(args):
         num_pair_index = int(max(df1['dst_idx'].max(), df2['dst_idx'].max()) + 1)
 
         if getattr(args, 'use_embedding', False):
-            # Save info for embedding path (indices only; actual embeddings used later in run_dual)
             args.num_pair_index = num_pair_index
             args.pair_index1 = torch.tensor(df1.dst_idx.values, dtype=torch.long)
             args.pair_index2 = torch.tensor(df2.dst_idx.values, dtype=torch.long)
@@ -228,7 +227,7 @@ if __name__ == "__main__":
 
     args.use_graph_structure = True
     args.use_node_feats = True # Use node features
-    args.use_atomic_group = True # Atomic group encoding
+    args.use_atomic_group = True # Covalent group encoding
     args.use_cached_subgraph = True
 
     print(args)
@@ -242,7 +241,6 @@ if __name__ == "__main__":
     BASE_SEED = 0 
 
     set_seed(BASE_SEED)
-    # ###################################################
     # # Load features and graphs
     node_feats, edge_feats1, edge_feats2, g1, g2, df1, df2, args = load_all_data(args)
 
@@ -290,7 +288,7 @@ if __name__ == "__main__":
         train_time.append(results["Total train time"])
         test_time.append(results["Test time"])
 
-    # ---- summary stats (use sample std, ddof=1) ----
+    # summary stats 
     def mean_std(x):
         x = np.asarray(x, dtype=np.float64)
         mu = float(np.mean(x))

@@ -41,11 +41,9 @@ df["time"] -= df["time"].min()
 df["elem"] = df.apply(lambda r: f"{r['Atom_Name']}_{r['Residue_ID']}", axis=1)
 
 
-# # Select all O Atoms
+# Select all O Atoms
 
 df1 = df[df['Atom_Type'].isin(['o', 'os'])].reset_index(drop=True) # replace 'os' with 'oh' for benzoin dataset
-# Pruning
-# df1 = df[(df['Residue_ID'].between(5, 14)) & df['Atom_Type'].isin(['o', 'os'])].reset_index(drop=True) # replace 'os' with 'oh' for benzoin dataset
 df2 = df[(df['Residue_Name'] == 'CSP') & (df['Atom_Type'] == 'n')].reset_index(drop=True)
 df3 = df[(df['Residue_Name'] == 'CSP') & (df['Atom_Type'] == 'hn')].reset_index(drop=True)
 

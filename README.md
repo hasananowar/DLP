@@ -1,7 +1,8 @@
-## DLP: Dual Link Prediction from Hydrogen Bonds in Dynamic Molecular Graph
-We propose a novel dual link prediction framework (DLP) that predicts the coexistence of *dual links* from dynamic molecular graphs.
-![DLP Framework](./DLP_model_2.png)
+## DLP
+This repository provides the source code for the implementation of the model described in: Atomic Motion Awareness for Hydrogen Bonds Prediction in Dynamic Molecular Graphs (NOTE: Submitted at IEEE MDM 2026).
 
+In this work, we propose a novel link prediction framework (DLP) that predicts the coexistence of *dual links* from dynamic molecular graphs.
+![DLP Framework](./DLP_model_2.png)
 
 
 ### Dependencies

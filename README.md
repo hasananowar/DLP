@@ -2,7 +2,7 @@
 This repository provides the source code for the implementation of the methods described in: **Hydrogen Bond Prediction With Spatio-Temporal Evolution Awareness** (NOTE: Submitted as an application paper at ACM SIGSPATIAL 2026).
 
 In this work, we propose a novel link prediction framework (DLP) that predicts the coexistence of *dual links* from dynamic molecular graphs.
-![DLP Framework](./figs/DLP_model_2.png)
+![DLP Framework](./DLP_model_2.png)
 
 
 ### Dependencies
@@ -76,10 +76,10 @@ We begin with molecular dynamics simulation (MDS) trajectories that record the 3
 1. a polymer substrate, Amylose Tris (3,5-dimethylphenyl carbamate), commonly referred to as ADMPC, and
 2. a drug molecule — Flavanone for the *Flavanone255k* and *Flavanone80k* datasets, and Benzoin for the *Benzoin* dataset.
 
-<!-- <p align="center">
-  <img src="./figs/ADMPC.png" width="30%" alt="ADMPC polymer repeating unit"/>
+<p align="center">
+  <img src="./ADMPC.png" width="30%" alt="ADMPC polymer repeating unit"/>
 </p>
-<p align="center"><em>A repeating unit of the polymer (ADMPC).</em></p> -->
+<p align="center"><em>A repeating unit of the polymer (ADMPC).</em></p>
 
 For HB analysis, we focus exclusively on donors, covalently bonded H atoms, and acceptors. Timestamps are normalized by shifting all frames to a common temporal origin. For each time $t$, we enumerate all donor–hydrogen–acceptor triplets and compute the geometric criteria associated with HB formation.
 

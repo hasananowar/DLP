@@ -2,7 +2,7 @@
 This repository provides the source code for the implementation of the methods described in: **Hydrogen Bond Prediction With Spatio-Temporal Evolution Awareness** (NOTE: Submitted as an application paper at ACM SIGSPATIAL 2026).
 
 In this work, we propose a novel link prediction framework (DLP) that predicts the coexistence of *dual links* from dynamic molecular graphs.
-![DLP Framework](./DLP_model_2.png)
+![DLP Framework](./images/DLP_model_2.png)
 
 
 ### Dependencies
@@ -44,13 +44,13 @@ python setup.py build_ext --inplace
 #### Graph generation
 
 ```shell
-python gen_graph.py --data FILT_HB/edges1.csv
-python gen_graph.py --data FILT_HB/edges2.csv
+python gen_graph.py --data flavanone255k/edges1.csv
+python gen_graph.py --data flavanone255k/edges2.csv
 ```
 #### Dual Link prediction
 
 ```shell
-python train.py --data FILT_HB
+python train.py --data flavanone255k
 ```
 
 #### Baselines
@@ -69,24 +69,36 @@ Presently, we only provide a small sample of the dataset used: [Download Sample 
 
 
 #### Data Preprocessing
-This section describes the preprocessing pipeline that converts raw molecular dynamics trajectories into temporal graphs. The procedure computes geometric descriptors (distances and angles), derives time-stamped molecular interaction edges, and produces node and edge attributes for downstream temporal modeling.
 
-We begin with molecular dynamics simulation (MDS) trajectories that record the 3D positions and metadata of atoms at each timestamp. Each record provides the spatial coordinates $(x, y, z)$ at time $t$, together with *Atom Name*, *Atom Type*, *Molecule Name*, and *Molecule ID*. All datasets contain two types of molecules:
+The `gen_data.py` script converts raw molecular dynamics simulation trajectories into the two temporal edge streams used by DLP. The input is a per-frame record of atoms with their 3D coordinates `(x, y, z)`, `Atom Name`, `Atom Type`, `Molecule Name`, and `Molecule ID`. Each dataset contains a polymer substrate, ADMPC (Amylose Tris(3,5-dimethylphenyl carbamate)), and a drug molecule — Flavanone (*Flavanone255k*, *Flavanone80k*) or Benzoin (*Benzoin*).
 
-1. a polymer substrate, Amylose Tris (3,5-dimethylphenyl carbamate), commonly referred to as ADMPC, and
-2. a drug molecule — Flavanone for the *Flavanone255k* and *Flavanone80k* datasets, and Benzoin for the *Benzoin* dataset.
+<table align="center">
+  <tr>
+    <td align="center"><img src="./images/ADMPC.png" width="250" alt="ADMPC"/></td>
+    <td align="center"><img src="./images/Flavanone.png" width="250" alt="Flavanone"/></td>
+  </tr>
+  <tr>
+    <td align="center"><em>A repeating unit of the polymer (ADMPC).</em></td>
+    <td align="center"><em>Example of a drug molecule (Flavanone).</em></td>
+  </tr>
+</table>
 
-<p align="center">
-  <img src="./ADMPC.png" width="30%" alt="ADMPC polymer repeating unit"/>
-</p>
-<p align="center"><em>A repeating unit of the polymer (ADMPC).</em></p>
+The pipeline keeps only HB-relevant atoms (donors, covalently bonded H atoms, and acceptors), normalizes timestamps to a common origin, and for each frame enumerates donor–hydrogen–acceptor triplets to build two edge types:
 
-For HB analysis, we focus exclusively on donors, covalently bonded H atoms, and acceptors. Timestamps are normalized by shifting all frames to a common temporal origin. For each time $t$, we enumerate all donor–hydrogen–acceptor triplets and compute the geometric criteria associated with HB formation.
+- **Distance edges** — created when the donor–acceptor distance is within 3.5 Å.
+- **Angle edges** — created when the acceptor–H–donor angle is within [135°, 180°).
 
-1. **Distance edges.** For an acceptor $u$ and a donor $v$ at time $t$, we compute the Euclidean distance $d_{u,v}(t)$ and create a distance-type edge $e^{\text{dist}}_{u,v}(t)$ if $d_{u,v}(t) \leq 3.5\ \text{Å}$.
-2. **Angle edges.** Given an HB-capable triplet $(u, v, w)$ at time $t$, we compute the angle $\theta_{u,w,v}(t)$ and create an angle-type edge $e^{\text{angle}}_{u,w}(t)$ if $135^\circ \leq \theta_{u,w,v}(t) < 180^\circ$.
+A node forming both edge types at the same timestamp is a **positive dual link** (`y=1`); nodes with only one edge type are **negatives** (`y=0`).
 
-This step yields two temporal edge streams (distance-type and angle-type), each with attributes: *(source, destination, timestamp)*. We merge the distance-type and angle-type edges on common identifiers. We also assign all node identifiers to a *global* node index, ensuring that distance and angle edges share a common node space. Since a dual link corresponds to the simultaneous satisfaction of both geometric criteria at a given timestamp, we label entries appearing in both streams as positive dual interactions ($y=1$). Entries present in only one stream are labeled as negatives ($y=0$). Finally, we export the processed data as two CSV files, `edges1.csv` (distance-type) and `edges2.csv` (angle-type), along with a `node_features.pt` file that encodes molecule-level node attributes.
+See Section 2.3 of the paper for the formal definitions and thresholds.
+
+**Outputs:**
+
+| File | Contents |
+|------|----------|
+| `edges1.csv` | distance-type edges `(source, destination, timestamp)` |
+| `edges2.csv` | angle-type edges `(source, destination, timestamp)` |
+| `node_features.pt` | molecule-level node attributes |
 
 ### Contact
 

@@ -1,4 +1,4 @@
-## DLP
+## Dual Link Prediction (DLP)
 This repository provides the source code for the implementation of the methods described in: **Hydrogen Bond Prediction With Spatio-Temporal Evolution Awareness** (NOTE: Submitted as an application paper at ACM SIGSPATIAL 2026).
 
 In this work, we propose a novel link prediction framework (DLP) that predicts the coexistence of *dual links* from dynamic molecular graphs.

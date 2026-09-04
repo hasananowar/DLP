@@ -1,11 +1,11 @@
 ## Dual Link Prediction (DLP)
-This repository provides the source code for the implementation of the methods described in: **Hydrogen Bond Prediction With Spatio-Temporal Evolution Awareness** (NOTE: Accepted as a short paper at ACM SIGSPATIAL 2026).
+This repository provides the source code for **Hydrogen Bond Prediction With Spatio-Temporal Evolution Awareness** (NOTE: Accepted as a short paper at ACM SIGSPATIAL 2026).
 
 In this work, we propose a novel link prediction framework (DLP) that predicts the coexistence of *dual links* from dynamic molecular graphs.
 ![DLP Framework](./images/DLP_model_3.png)
 
 
-### Dependencies
+<!-- ### Dependencies
 
 The following libraries and frameworks are required to run the code. Make sure to install these dependencies using `pip` or `conda`.
 
@@ -19,7 +19,7 @@ The following libraries and frameworks are required to run the code. Make sure t
 - **torchmetrics**: Metrics for evaluating PyTorch models.
 - **pandas**: Data manipulation and analysis library.
 - **numpy**: Library for numerical computations.
-- **scipy**: Library for scientific computing.
+- **scipy**: Library for scientific computing. -->
 
 
 ### How to use
